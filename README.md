@@ -3,8 +3,33 @@
 A data abstraction tool for medical data. Native desktop app (Rust + GPUI) over a Cloudflare
 backend, built for arbitrary runtime-defined forms at ~100M field values.
 
-> **Status: not yet implemented.** This repository currently contains the complete design
-> and implementation documentation. Start at [docs/08-MILESTONES.md](docs/08-MILESTONES.md).
+> **Status: implemented and running on macOS; unverified elsewhere.**
+>
+> All seven crates build and pass, the Worker cross-compiles and bundles to 391 KB gzipped,
+> and the desktop app opens, persists, and edits forms. The performance gates that justify
+> the architecture are **measured**, not assumed.
+>
+> What is *not* true yet: it has never been built on Windows or Linux, never deployed to
+> Cloudflare, and holds no real patient data (see [Before you start](#before-you-start)).
+> Start at [docs/08-MILESTONES.md](docs/08-MILESTONES.md) for what is done and what is not.
+
+## Measured, not assumed
+
+| | Requirement | Gate | Measured |
+|---|---|---|---|
+| **R13** form load, 500 fields | 200 ms | 5 ms | **195 µs** |
+| **R14** form save, 300 fields | 200 ms | 10 ms | **5.2 ms** |
+| R14 single field (the steady state) | — | — | **86 µs** |
+| Worker bundle | 10 MB | — | **391 KB** gzipped |
+
+R13 has roughly a thousandfold margin over the requirement. That is the whole payoff of
+making local encrypted SQLite the UI's system of record rather than putting the network on
+the critical path — see [ADR-0002](docs/adr/0002-encrypted-local-sqlite.md).
+
+Two numbers are deliberately **absent** rather than estimated: seeding throughput and the
+Durable Object cold-wake time. Both were measured locally, both turned out to be artifacts
+of the emulator, and both are recorded as unmeasured until there is a real deployment. See
+[07-TESTING.md](docs/07-TESTING.md).
 
 ## What it does
 
