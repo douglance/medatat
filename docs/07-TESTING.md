@@ -360,6 +360,20 @@ medatat api cases "$CASE" values -X POST -H "Authorization: Bearer $TOK" \
 
 ---
 
+### What CI does not cover
+
+Worth knowing before a green run is read as more than it is:
+
+- **Outbound mail.** The smoke job pins wrangler to 4.60.0, which predates the 4.123.0 that
+  `send_email` requires. Every assertion still holds — `/auth/request` stores the code in KV
+  *before* it attempts the send — but nothing in CI exercises the mail path. A green smoke
+  job is not evidence that email works.
+- **The ubuntu runner's workerd.** It downloads a different platform binary than the one
+  verified locally on macOS. If it misbehaves the smoke job fails at "Start the Worker" with
+  the log attached, which is the cleanest failure arrangeable without a runner to test on.
+- **Anything requiring a deployment.** Real seeding throughput and the Durable Object
+  hibernation wake path are both unmeasurable locally and therefore unmeasurable in CI.
+
 ## CI pipeline
 
 `.github/workflows/ci.yml` exists and is committed. **It has never run** — the repository

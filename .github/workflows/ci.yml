@@ -261,3 +261,120 @@ jobs:
           cache-on-failure: true
 
       - run: cargo build -p medatat-ui
+
+  # --------------------------------------------------------------------------
+  # scripts/smoke.sh against `wrangler dev --local`.
+  #
+  # Verified locally on macOS: all 13 checks pass on both code paths, repeatably.
+  # NOT verified on an ubuntu runner — see the note on the wrangler pin below.
+  #
+  # Every step below either succeeds or fails with a message naming what broke.
+  # That is deliberate: the bug this suite exists to catch was a wrong CLI flag
+  # that surfaced fifteen lines later as a bogus assertion failure.
+  #
+  # Rate limits (3/email, 20/IP per 15 min) never fire here: CI state is fresh
+  # and one run makes two auth requests.
+  # --------------------------------------------------------------------------
+  smoke:
+    name: smoke (end-to-end against wrangler dev)
+    needs: preflight
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup show
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+
+      # wrangler is pinned to the version this job was verified against: an unpinned
+
+      # release can change `kv key get` output or `dev --local` behaviour and turn the
+
+      # job red for reasons unrelated to the code.
+
+      #
+
+      # NOTE: 4.60.0 predates the 4.123.0 that `send_email` needs, so THIS JOB DOES NOT
+
+      # EXERCISE send_email AT ALL. It does not need to -- /auth/request stores the code
+
+      # in KV before it attempts the send, so every assertion here holds with a
+
+      # non-functional mail binding. But do not read a green smoke job as evidence that
+
+      # outbound mail works; nothing in CI covers that path.
+
+      - name: Install wrangler
+        # Pinned to the version this was verified against. Unpinned, a wrangler
+        # release can change `kv key get` output or `dev --local` behaviour and
+        # turn this job red for reasons unrelated to the code under test.
+        run: npm install -g wrangler@4.60.0
+
+      - name: Build the CLI
+        run: cargo build --release -p medatat-cli
+
+      - name: Create the local D1 schema
+        run: |
+          wrangler d1 migrations apply medatat --local
+          # `migrations apply` reports success when it finds no migrations, so
+          # assert the schema actually exists rather than trusting the exit code.
+          wrangler d1 execute medatat --local \
+            --command "SELECT name FROM sqlite_master WHERE type='table' AND name='app_user'" \
+            | grep -q app_user \
+            || { echo "::error::D1 schema was not created — check migrations_dir in wrangler.jsonc"; exit 1; }
+
+      - name: Seed the smoke user
+        run: |
+          wrangler d1 execute medatat --local --command \
+            "INSERT OR REPLACE INTO app_user (user_id,email,display_name,role,is_active,created_at) \
+             VALUES ('smoke-user','smoke@cetify.email','Smoke','admin',1,'2026-01-01T00:00:00Z')"
+
+      - name: Start the Worker
+        run: |
+          nohup wrangler dev --local --port 8787 > /tmp/wrangler.log 2>&1 &
+          for _ in $(seq 1 120); do
+            curl -sf -m 2 http://localhost:8787/health >/dev/null 2>&1 && exit 0
+            sleep 2
+          done
+          echo "::error::wrangler dev did not serve /health within 240s"
+          tail -50 /tmp/wrangler.log
+          exit 1
+
+      - name: Seed a form
+        env:
+          MEDATAT_API: http://localhost:8787
+        run: |
+          export PATH="$PWD/target/release:$PATH"
+          # The corpus needs an admin token, which needs the real auth flow. The
+          # code is recovered from LOCAL KV by `medatat dev last-code` — there is
+          # no Worker endpoint for it, and the command hardcodes `--local`.
+          curl -sf -m 15 -o /dev/null -X POST -H 'Content-Type: application/json' \
+            -d '{"email":"smoke@cetify.email"}' http://localhost:8787/auth/request \
+            || { echo "::error::/auth/request failed"; exit 1; }
+          CODE=$(medatat dev last-code --email smoke@cetify.email) \
+            || { echo "::error::could not recover the sign-in code from local KV"; exit 1; }
+          TOKEN=$(curl -sf -m 15 -X POST -H 'Content-Type: application/json' \
+            -d "{\"email\":\"smoke@cetify.email\",\"code\":\"$CODE\"}" \
+            http://localhost:8787/auth/verify | jq -r '.data.token // empty')
+          [ -n "$TOKEN" ] || { echo "::error::/auth/verify returned no token"; exit 1; }
+          MEDATAT_TOKEN="$TOKEN" medatat push --cases 1 --fields 20 --batch 5 \
+            || { echo "::error::seeding the smoke form failed"; exit 1; }
+
+      - name: Run smoke.sh
+        env:
+          SMOKE_EMAIL: smoke@cetify.email
+        run: |
+          export PATH="$PWD/target/release:$PATH"
+          # Structural guard: `medatat dev last-code` reads LOCAL emulator state and
+          # never reads MEDATAT_API, so pointing this job at a deployed Worker would
+          # silently compare a local code against a remote session. Refuse outright.
+          TARGET=http://localhost:8787
+          case "$TARGET" in
+            http://localhost:*|http://127.0.0.1:*) ;;
+            *) echo "::error::smoke job must target localhost; got $TARGET"; exit 1 ;;
+          esac
+          ./scripts/smoke.sh "$TARGET"
+
+      - name: Worker log on failure
+        if: failure()
+        run: tail -100 /tmp/wrangler.log || true
