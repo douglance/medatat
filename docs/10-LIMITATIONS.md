@@ -136,7 +136,23 @@ renegotiating. See [04-SYNC.md](04-SYNC.md#caseload-pre-sync).
 
 ---
 
-### 10. Keyboard evidence is macOS-only
+### 10. Keyboard evidence was macOS-only — and the tests, not the app, were the problem
+
+**Resolved by CI, and the resolution is instructive.** The prediction was that key routing
+differs by platform and the suite might produce a different set of passes elsewhere. It did:
+on Linux and Windows, **64 tests passed and exactly 5 failed — the same 5 on both** — all of
+them the `Cmd`-based bindings.
+
+The app was right. **The tests were macOS-shaped.** Bindings use gpui's `secondary()`, which
+is Cmd on macOS and Ctrl everywhere else, but the tests hardcoded `"cmd-f"`. So they
+exercised the binding on one platform and silently failed on the other two.
+
+This is worth keeping as a warning rather than deleting: a test suite can be *platform-
+specific in a way that looks like a platform bug*, and the only thing that distinguishes
+them is running it somewhere else. The original limitation was correct to record; what it
+could not tell was which side was wrong.
+
+### 10a. What remains untested cross-platform
 
 The 14 `#[gpui::test]` cases dispatch real keystrokes and have caught three genuine focus
 bugs, but they prove one dispatch tree on one platform. Key routing is demonstrably

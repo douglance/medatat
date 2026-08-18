@@ -4,6 +4,21 @@
 //! required — so these run in CI and on a machine whose screen is locked. Everything else
 //! belongs below the GUI line; three is a budget, not a target.
 
+/// The platform's "secondary" modifier, as a keystroke prefix.
+///
+/// Bindings use gpui's `secondary()`, which is **Cmd on macOS and Ctrl everywhere else**.
+/// A test that hardcodes `"cmd-f"` therefore exercises the binding on exactly one platform
+/// and silently fails on the other two — which is precisely what CI found: 64 tests passed
+/// on Linux and Windows and the five `cmd-` ones did not, because the app was right and the
+/// tests were macOS-shaped.
+fn secondary(key: &str) -> String {
+    if cfg!(target_os = "macos") {
+        format!("cmd-{key}")
+    } else {
+        format!("ctrl-{key}")
+    }
+}
+
 use crate::form::FormView;
 use crate::form::view::{CHANGE_EVENTS, PARENT_RENDERS};
 use crate::widgets;
@@ -320,7 +335,7 @@ fn cmd_f_opens_the_field_palette(cx: &mut TestAppContext) {
 
     assert!(!cx.update(|_, cx| view.read(cx).palette_is_open()));
 
-    cx.simulate_keystrokes("cmd-f");
+    cx.simulate_keystrokes(&secondary("f"));
     cx.run_until_parked();
     assert!(
         cx.update(|_, cx| view.read(cx).palette_is_open()),
@@ -343,7 +358,7 @@ fn escape_closes_the_field_palette(cx: &mut TestAppContext) {
     let store = Arc::new(Store::open_in_memory().expect("store"));
     let (view, cx) = open_form!(cx, wide_form(3), store);
 
-    cx.simulate_keystrokes("cmd-f");
+    cx.simulate_keystrokes(&secondary("f"));
     cx.run_until_parked();
     assert!(cx.update(|_, cx| view.read(cx).palette_is_open()));
 
@@ -403,7 +418,7 @@ fn cmd_brackets_collapse_and_expand_a_section(cx: &mut TestAppContext) {
         "focus is inside a field, not on the form root"
     );
 
-    cx.simulate_keystrokes("cmd-[");
+    cx.simulate_keystrokes(&secondary("["));
     cx.run_until_parked();
     assert!(
         cx.update(|_, cx| view.read(cx).is_collapsed(0)),
@@ -415,7 +430,7 @@ fn cmd_brackets_collapse_and_expand_a_section(cx: &mut TestAppContext) {
         "a collapsed section contributes no stops"
     );
 
-    cx.simulate_keystrokes("cmd-]");
+    cx.simulate_keystrokes(&secondary("]"));
     cx.run_until_parked();
     assert!(!cx.update(|_, cx| view.read(cx).is_collapsed(0)));
     assert_eq!(
@@ -535,7 +550,7 @@ fn cmd_j_opens_the_next_case_from_the_worklist(cx: &mut TestAppContext) {
         "the worklist shows first, with no case open"
     );
 
-    cx.simulate_keystrokes("cmd-j");
+    cx.simulate_keystrokes(&secondary("j"));
     cx.run_until_parked();
     assert!(
         cx.update(|_, cx| workspace.read(cx).form.is_some()),
@@ -566,7 +581,7 @@ fn cmd_b_opens_the_builder(cx: &mut TestAppContext) {
     let (workspace, cx) = cx.add_window_view(|window, cx| crate::Workspace::new(s, window, cx));
     cx.run_until_parked();
 
-    cx.simulate_keystrokes("cmd-b");
+    cx.simulate_keystrokes(&secondary("b"));
     cx.run_until_parked();
     assert!(
         cx.update(|_, cx| workspace.read(cx).builder.is_some()),
