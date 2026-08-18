@@ -2083,9 +2083,8 @@ mod tests {
         let id = removed.field_id;
 
         let after = with_field_placed(&without, 1, removed, "Back again").expect("placed");
-        assert_eq!(
+        assert!(
             after.idx_of(id).is_some(),
-            true,
             "the same field id is placed again"
         );
         assert_eq!(after.field_count(), before.field_count());
@@ -2328,7 +2327,7 @@ mod persistence_tests {
             .chain(next.iter_fields())
             .map(|f| (*f.field).clone())
             .collect();
-        fields.sort_by(|a, b| a.field_id.cmp(&b.field_id));
+        fields.sort_by_key(|a| a.field_id);
         fields.dedup_by(|a, b| a.field_id == b.field_id);
         store.save_fields(&fields).expect("fields saved");
         store.save_form(next, ConfigRev(1)).expect("form saved");

@@ -211,6 +211,9 @@ impl WidgetState {
     }
 
     /// Blanks this widget's editable contents. Radio and select hold no text of their own.
+    ///
+    /// Gated on `phi`: clearing a buffer exists for PHI hygiene and has no other caller.
+    #[cfg(feature = "phi")]
     pub fn clear(&self, window: &mut Window, cx: &mut App) {
         match self {
             WidgetState::Input(e) => e.update(cx, |s, cx| s.set_value("", window, cx)),

@@ -10,6 +10,7 @@ mod form;
 #[cfg(test)]
 mod gui_tests;
 mod mode;
+mod sync;
 mod widgets;
 mod worklist;
 
@@ -139,6 +140,17 @@ struct Workspace {
     def: Option<Arc<FormDef>>,
     message: SharedString,
     focus: FocusHandle,
+    /// Peripheral sync chrome (R15). Reads the local outbox, so it is meaningful even
+    /// before a `Transport` exists — an abstractor's own unsynced edits are counted from
+    /// the moment they are written.
+    sync: sync::SyncIndicator,
+    /// The background loop's handle. Dropping it stops the loop, so `Workspace` holds it.
+    /// `None` until there is a `Transport` to construct a `SyncEngine` with.
+    _sync_task: Option<gpui::Task<()>>,
+    /// Inbound values parked by the background loop, drained on the foreground so they go
+    /// through `FormView`'s focused-field guard rather than round the side of it.
+    inbox: Arc<sync::Inbox>,
+    _drain_task: gpui::Task<()>,
 }
 
 impl Workspace {
@@ -152,6 +164,23 @@ impl Workspace {
             }
             Err(e) => (None, SharedString::from(format!("no form available: {e}"))),
         };
+
+        let store_for_sync = Arc::clone(&store);
+
+        // Inbound sync values land here and are applied on the foreground. A poll, not a
+        // wake-up: the background executor must never reach into a view.
+        let inbox = Arc::new(sync::Inbox::default());
+        let drain_task = cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor().timer(sync::drain_interval()).await;
+                if this
+                    .update(cx, |w: &mut Workspace, cx| w.drain_inbox(cx))
+                    .is_err()
+                {
+                    return; // the workspace is gone
+                }
+            }
+        });
 
         let on_open = Self::on_open_case(cx);
         let s = Arc::clone(&store);
@@ -173,6 +202,38 @@ impl Workspace {
             def,
             message,
             focus,
+            sync: sync::SyncIndicator::new(
+                Arc::new(medatat_sync::SyncStatus::default()),
+                Arc::clone(&store_for_sync),
+            ),
+            // No `Transport` implementation exists yet, so there is no engine to run. The
+            // loop itself is written and tested (`sync::spawn`); this is the one line that
+            // starts it once a transport lands.
+            _sync_task: None,
+            inbox,
+            _drain_task: drain_task,
+        }
+    }
+
+    /// Applies whatever the background loop parked, to the open case only.
+    ///
+    /// Every row goes through `FormView::receive_remote`, which defers anything for the
+    /// field the user is currently in until they leave it (`docs/04-SYNC.md`).
+    fn drain_inbox(&mut self, cx: &mut Context<Self>) {
+        if self.inbox.is_empty() {
+            return;
+        }
+        let batches = self.inbox.drain();
+        let Some(form) = self.form.clone() else {
+            // No case open: the values are already in SQLite and will be read on open.
+            return;
+        };
+        let open_case = form.read(cx).case_id();
+        for (case_id, rows) in batches {
+            if case_id != open_case {
+                continue;
+            }
+            form.update(cx, |v, cx| v.receive_remote_rows(&rows, cx));
         }
     }
 
@@ -379,7 +440,14 @@ impl Render for Workspace {
                     .px_4()
                     .py_1()
                     .child(SharedString::from("medatat"))
-                    .child(self.message.clone()),
+                    .child(
+                        h_flex()
+                            .gap_4()
+                            // Sync status is a count in the footer and nothing else. Never
+                            // a spinner, never over content (R15).
+                            .children(self.sync.line().map(SharedString::from))
+                            .child(self.message.clone()),
+                    ),
             )
     }
 }

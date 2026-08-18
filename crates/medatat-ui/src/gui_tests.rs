@@ -445,7 +445,7 @@ fn alt_arrows_reorder_in_the_builder(cx: &mut TestAppContext) {
         .save_form(&def, medatat_core::ConfigRev(1))
         .expect("saved");
 
-    cx.update(|cx| widgets::init(cx));
+    cx.update(widgets::init);
     let (builder, cx) = cx.add_window_view(|window, cx| {
         BuilderView::new(Arc::clone(&store), Arc::clone(&def), window, cx)
     });
@@ -525,7 +525,7 @@ fn cmd_j_opens_the_next_case_from_the_worklist(cx: &mut TestAppContext) {
             .expect("case");
     }
 
-    cx.update(|cx| widgets::init(cx));
+    cx.update(widgets::init);
     let s = Arc::clone(&store);
     let (workspace, cx) = cx.add_window_view(|window, cx| crate::Workspace::new(s, window, cx));
     cx.run_until_parked();
@@ -561,7 +561,7 @@ fn cmd_b_opens_the_builder(cx: &mut TestAppContext) {
     store.save_fields(&fields).expect("fields");
     store.save_form(&def, ConfigRev(1)).expect("form");
 
-    cx.update(|cx| widgets::init(cx));
+    cx.update(widgets::init);
     let s = Arc::clone(&store);
     let (workspace, cx) = cx.add_window_view(|window, cx| crate::Workspace::new(s, window, cx));
     cx.run_until_parked();
@@ -578,5 +578,306 @@ fn cmd_b_opens_the_builder(cx: &mut TestAppContext) {
     assert!(
         cx.update(|_, cx| workspace.read(cx).builder.is_none()),
         "escape leaves the builder"
+    );
+}
+
+/// `medatat-testkit`'s `MockTransport` does not implement `Transport` — testkit avoids
+/// depending on `medatat-sync` on purpose, so each caller writes this adapter.
+mod mock_transport {
+    use async_trait::async_trait;
+    use medatat_core::ids::{CaseId, CaseRev, ConfigRev};
+    use medatat_core::wire::{
+        CasePage, CaseQuery, ConfigDelta, PutValuesReq, PutValuesResp, ValuePage,
+    };
+    use medatat_sync::{Transport, TransportError};
+    use medatat_testkit::{MockError, MockTransport};
+    use std::sync::Arc;
+
+    pub struct Adapter(pub Arc<MockTransport>);
+
+    fn map(e: MockError) -> TransportError {
+        match e {
+            MockError::Offline => TransportError::Offline,
+            other => TransportError::Server {
+                status: 500,
+                message: other.to_string(),
+            },
+        }
+    }
+
+    #[async_trait]
+    impl Transport for Adapter {
+        async fn config(&self, since: ConfigRev) -> Result<Option<ConfigDelta>, TransportError> {
+            self.0.config(since).map_err(map)
+        }
+        async fn list_cases(&self, q: CaseQuery) -> Result<CasePage, TransportError> {
+            self.0.list_cases(q).map_err(map)
+        }
+        async fn get_values(&self, c: CaseId, since: CaseRev) -> Result<ValuePage, TransportError> {
+            self.0.get_values(c, since).map_err(map)
+        }
+        async fn put_values(
+            &self,
+            c: CaseId,
+            r: PutValuesReq,
+        ) -> Result<PutValuesResp, TransportError> {
+            self.0.put_values(c, r).map_err(map)
+        }
+    }
+}
+
+/// The background loop actually runs, on the background executor, and pre-syncs the
+/// caseload before anything else.
+///
+/// R15 rests on the caseload being local before the user opens anything, so "it syncs
+/// eventually" is not the property — "it has already synced" is.
+#[gpui::test]
+fn sync_loop_pre_syncs_the_caseload_in_the_background(cx: &mut TestAppContext) {
+    use medatat_sync::SyncEngine;
+    use medatat_testkit::MockTransport;
+
+    let store = Arc::new(Store::open_in_memory().expect("store"));
+    let mock = Arc::new(MockTransport::new());
+    let engine = SyncEngine::new(
+        Arc::clone(&store),
+        mock_transport::Adapter(Arc::clone(&mock)),
+    );
+
+    let _task = cx.update(|cx| crate::sync::spawn(engine, "demo".into(), cx));
+    cx.run_until_parked();
+
+    let calls = mock.calls();
+    assert!(
+        calls.iter().any(|c| c.starts_with("list_cases")),
+        "the caseload must be pulled without anyone asking, got {calls:?}"
+    );
+    assert!(
+        calls.iter().any(|c| c.starts_with("config")),
+        "form definitions too, got {calls:?}"
+    );
+}
+
+/// Offline is a normal state: the loop keeps running and nothing blocks.
+#[gpui::test]
+fn sync_loop_survives_being_offline(cx: &mut TestAppContext) {
+    use medatat_sync::SyncEngine;
+    use medatat_testkit::MockTransport;
+
+    let store = Arc::new(Store::open_in_memory().expect("store"));
+    let mock = Arc::new(MockTransport::new());
+    mock.go_offline();
+    let engine = SyncEngine::new(
+        Arc::clone(&store),
+        mock_transport::Adapter(Arc::clone(&mock)),
+    );
+
+    let _task = cx.update(|cx| crate::sync::spawn(engine, "demo".into(), cx));
+    cx.run_until_parked();
+
+    // It tried, it failed, it did not panic and did not stop.
+    assert!(
+        !mock.calls().is_empty(),
+        "the loop still attempts while offline"
+    );
+
+    mock.go_online();
+    mock.clear_calls();
+    // Far enough to pass every interval in the loop.
+    cx.executor()
+        .advance_clock(std::time::Duration::from_secs(6 * 60));
+    cx.run_until_parked();
+
+    assert!(
+        !mock.calls().is_empty(),
+        "coming back online resumes without a restart"
+    );
+}
+
+/// **Inbound sync never overwrites the field the user is in** (`docs/04-SYNC.md`).
+///
+/// Until the engine gained a change observer this criterion was unfalsifiable: the guard
+/// existed in `FormView::receive_remote` and nothing could ever call it. This is the test
+/// that makes it a claim rather than an intention.
+#[gpui::test]
+fn inbound_sync_defers_the_focused_field_until_the_user_leaves(cx: &mut TestAppContext) {
+    use medatat_core::Value;
+    use medatat_core::wire::ValueRow;
+
+    let def = wide_form(3);
+    let ids: Vec<_> = def.iter_fields().map(|f| f.field.field_id).collect();
+    let store = Arc::new(Store::open_in_memory().expect("store"));
+    let (view, cx) = open_form!(cx, Arc::clone(&def), store);
+
+    // Stand in the first field.
+    cx.simulate_keystrokes("tab");
+    cx.run_until_parked();
+    assert_eq!(
+        cx.update(|_, cx| view.read(cx).focused_field()),
+        Some(FieldIdx(0))
+    );
+
+    let row = |i: usize, text: &str| ValueRow {
+        field_id: ids[i],
+        value: Value::Text(text.into()),
+        rev: CaseRev(1),
+        updated_by: None,
+        updated_at: None,
+    };
+
+    // Someone else's edits arrive for the focused field and an idle one.
+    cx.update(|_, cx| {
+        view.update(cx, |v, cx| {
+            v.receive_remote_rows(&[row(0, "theirs"), row(1, "also theirs")], cx)
+        })
+    });
+    cx.run_until_parked();
+
+    let focused_value = cx.update(|_, cx| view.read(cx).instance().get(FieldIdx(0)).clone());
+    assert_eq!(
+        focused_value,
+        Value::Null,
+        "the field under the cursor must not be rewritten"
+    );
+    let idle_value = cx.update(|_, cx| view.read(cx).instance().get(FieldIdx(1)).clone());
+    assert_eq!(
+        idle_value,
+        Value::Text("also theirs".into()),
+        "a field nobody is in takes the update immediately"
+    );
+
+    // Leaving the field is what releases the deferred value.
+    cx.simulate_keystrokes("tab");
+    cx.run_until_parked();
+    let after = cx.update(|_, cx| view.read(cx).instance().get(FieldIdx(0)).clone());
+    assert_eq!(
+        after,
+        Value::Text("theirs".into()),
+        "the deferred value lands once the user has moved on"
+    );
+}
+
+/// A local edit wins over an inbound value for the same field: it is unsynced work, and
+/// silently replacing it would lose the abstractor's typing.
+#[gpui::test]
+fn inbound_sync_never_clobbers_an_unsynced_local_edit(cx: &mut TestAppContext) {
+    use medatat_core::Value;
+    use medatat_core::wire::ValueRow;
+
+    let def = wide_form(2);
+    let ids: Vec<_> = def.iter_fields().map(|f| f.field.field_id).collect();
+    let store = Arc::new(Store::open_in_memory().expect("store"));
+    let (view, cx) = open_form!(cx, Arc::clone(&def), store);
+
+    // Type into the first field, then move away so it is dirty but not focused.
+    cx.simulate_keystrokes("tab");
+    cx.run_until_parked();
+    cx.simulate_input("mine");
+    cx.run_until_parked();
+    cx.simulate_keystrokes("tab");
+    cx.run_until_parked();
+
+    cx.update(|_, cx| {
+        view.update(cx, |v, cx| {
+            v.receive_remote_rows(
+                &[ValueRow {
+                    field_id: ids[0],
+                    value: Value::Text("theirs".into()),
+                    rev: CaseRev(1),
+                    updated_by: None,
+                    updated_at: None,
+                }],
+                cx,
+            )
+        })
+    });
+    cx.run_until_parked();
+
+    let value = cx.update(|_, cx| view.read(cx).instance().get(FieldIdx(0)).clone());
+    assert_eq!(
+        value,
+        Value::Text("mine".into()),
+        "an unsynced local edit is not overwritten by an inbound value"
+    );
+}
+
+/// **R14: tabbing away persists.** The local write *is* the save, so leaving a field must
+/// reach SQLite — not wait for a blur event that programmatic focus never produces.
+#[gpui::test]
+fn r14_tabbing_away_from_a_field_flushes_it_to_sqlite(cx: &mut TestAppContext) {
+    use medatat_core::ConfigRev;
+    use medatat_core::wire::CaseSummary;
+
+    let def = wide_form(3);
+    let store = Arc::new(Store::open_in_memory().expect("store"));
+    store.save_form(&def, ConfigRev(1)).expect("form");
+
+    // `apply_local` writes against a real case row, so the case has to exist — the same
+    // precondition `Workspace::open_case` satisfies by reading one out of the worklist.
+    let case = CaseId::new();
+    store
+        .upsert_case(&CaseSummary {
+            case_id: case,
+            mrn: "SYN-MRN-0001".into(),
+            form_id: def.form_id,
+            assignee: Some(crate::DEMO_ASSIGNEE.into()),
+            rev: CaseRev::ZERO,
+            updated_at: "2026-08-18T09:00:00Z".into(),
+        })
+        .expect("case");
+
+    cx.update(widgets::init);
+    let s = Arc::clone(&store);
+    let d = Arc::clone(&def);
+    let (view, cx) = cx.add_window_view(|window, cx| {
+        FormView::new(d, case, CaseRev::ZERO, Vec::new(), s, window, cx)
+    });
+    cx.run_until_parked();
+
+    cx.simulate_keystrokes("tab");
+    cx.run_until_parked();
+    cx.simulate_input("typed");
+    cx.run_until_parked();
+
+    cx.simulate_keystrokes("tab");
+    cx.run_until_parked();
+
+    assert_eq!(cx.update(|_, cx| view.read(cx).case_id()), case);
+    let stored = store.load_case_values(case).expect("values");
+    assert!(
+        stored
+            .iter()
+            .any(|(_, v)| matches!(v, medatat_core::Value::Text(t) if t == "typed")),
+        "leaving a field must write it to the local store, found {stored:?}"
+    );
+}
+
+/// R8: a time field is canonicalised when you tab out of it, not only on Enter.
+#[gpui::test]
+fn r8_tabbing_out_of_a_time_field_canonicalises_it(cx: &mut TestAppContext) {
+    let store = Arc::new(Store::open_in_memory().expect("store"));
+    let mut def = FormDef::new(
+        FormId::new(),
+        "Times",
+        vec![section(
+            "S",
+            vec![field_of(0, FieldKind::Time), text_field(1)],
+            false,
+        )],
+    );
+    def.finalize();
+    let (view, cx) = open_form!(cx, Arc::new(def), store);
+
+    cx.simulate_keystrokes("tab");
+    cx.run_until_parked();
+    cx.simulate_input("9");
+    cx.run_until_parked();
+
+    cx.simulate_keystrokes("tab");
+    cx.run_until_parked();
+
+    let text = cx.update(|_, cx| view.read(cx).widget_text(FieldIdx(0), cx));
+    assert_eq!(
+        text, "09:00",
+        "tabbing out canonicalises, as blur and Enter do"
     );
 }

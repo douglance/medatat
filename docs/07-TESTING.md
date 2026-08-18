@@ -360,6 +360,21 @@ medatat api cases "$CASE" values -X POST -H "Authorization: Bearer $TOK" \
 
 ---
 
+### A benchmark can be green while the thing it measures never runs
+
+Bench 2 measures `Store::apply_local` and has passed at 5.2 ms throughout. Meanwhile
+**tabbing between fields never persisted anything**: `InputEvent::Blur` is not delivered
+when focus moves programmatically, so the commit path had a correct implementation and no
+caller on the route every user actually takes. The value stayed in RAM.
+
+A green Bench 2 and a working save were unrelated facts. The benchmark exercised the
+function directly; nothing exercised the *path to it*.
+
+The general form, since this is the fifth instance of the shape: **measuring a component
+proves the component, never its wiring.** The only thing that catches a missing caller is a
+test that starts where the user starts — which for the UI means a `#[gpui::test]` that
+presses the key, and for the API means a request over HTTP rather than a call to a handler.
+
 ### What CI does not cover
 
 Worth knowing before a green run is read as more than it is:

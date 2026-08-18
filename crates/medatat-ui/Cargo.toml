@@ -38,6 +38,9 @@ medatat-testkit = { workspace = true }
 # headlessly — no window is opened and no display is required. That is what makes the three
 # budgeted GUI tests runnable in CI and on a locked machine.
 gpui = { workspace = true, features = ["test-support"] }
+# The three-line `impl Transport for MockTransport` adapter that testkit deliberately does
+# not provide, so it need not depend on `medatat-sync`.
+async-trait = { workspace = true }
 
 [features]
 default = ["demo"]

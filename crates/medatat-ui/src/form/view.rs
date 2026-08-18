@@ -290,11 +290,27 @@ impl FormView {
         }
     }
 
+    /// Applies a batch of inbound sync values, one row at a time through the focus guard.
+    ///
+    /// The batch shape matters: the engine hands back what it applied to the store, so the
+    /// view never re-reads and diffs. Rewriting the field under the user's cursor is what
+    /// `receive_remote` refuses to do.
+    pub fn receive_remote_rows(
+        &mut self,
+        rows: &[medatat_core::wire::ValueRow],
+        cx: &mut Context<Self>,
+    ) {
+        for row in rows {
+            self.receive_remote(row.field_id, row.value.clone(), cx);
+        }
+    }
+
+    /// The case this view is editing, so the shell can route only that case's rows here.
+    pub fn case_id(&self) -> CaseId {
+        self.inst.case_id()
+    }
+
     /// Queues an inbound sync value, or applies it if the field is not being edited.
-    #[allow(
-        dead_code,
-        reason = "wired when medatat-sync drives the view; see docs/07-TESTING.md"
-    )]
     pub fn receive_remote(&mut self, id: FieldId, value: Value, cx: &mut Context<Self>) {
         let idx = self.inst.def().idx_of(id);
         if idx.is_some() && idx == self.focused {
@@ -365,6 +381,9 @@ impl FormView {
     /// Blanks every editable widget. PHI hygiene: a closed case must leave no field
     /// contents behind in a live input buffer, which `Value`'s zeroize cannot reach because
     /// the text also lives inside `gpui-component`'s own editing state.
+    ///
+    /// Gated on `phi` because that is the only caller — it exists where it is used.
+    #[cfg(feature = "phi")]
     pub fn clear_inputs(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         for w in &self.widgets {
             w.clear(window, cx);
@@ -681,7 +700,16 @@ impl FormView {
     }
 
     /// Puts focus on one field, whatever kind backs it.
+    ///
+    /// Commits the field being left rather than waiting for a blur event. Moving focus
+    /// programmatically does **not** produce `InputEvent::Blur`, so relying on it meant Tab
+    /// never canonicalised a time field, never flushed to SQLite, and never released a
+    /// deferred inbound value. Leaving a field is a deliberate act; the view knows which
+    /// field it is leaving, so it commits it itself.
     pub fn focus_field(&mut self, idx: FieldIdx, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(leaving) = self.focused.filter(|&f| f != idx) {
+            self.commit_field(leaving, window, cx);
+        }
         let Some(state) = self.widgets.get(idx.as_usize()) else {
             return;
         };
