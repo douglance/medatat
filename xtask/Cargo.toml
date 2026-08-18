@@ -1,0 +1,16 @@
+[package]
+name = "xtask"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+# Repository automation. `anyhow`, `unwrap`, and `expect` are allowed here and in
+# `medatat-cli` only -- see AGENTS.md.
+[dependencies]
+anyhow = { workspace = true }
+clap   = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

@@ -1,0 +1,31 @@
+[package]
+name = "medatat-worker"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+# The Worker ships as WASM. `cdylib` is what worker-build links; `rlib` is what
+# `cargo test` needs so the pure `logic/` layer tests natively without workerd.
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+medatat-core = { workspace = true }
+serde        = { workspace = true }
+serde_json   = { workspace = true }
+chrono       = { workspace = true }
+uuid         = { workspace = true }
+thiserror    = { workspace = true }
+sha2         = { workspace = true }
+getrandom    = { workspace = true }
+
+# `worker` binds workerd APIs through wasm-bindgen and has no meaning off wasm32.
+# Keeping it target-scoped is what lets `cargo test -p medatat-worker` run natively.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+worker = { workspace = true, features = ["d1"] }
+
+[features]
+default = []
+phi = ["medatat-core/phi"]

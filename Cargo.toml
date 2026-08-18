@@ -1,0 +1,156 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/medatat-core",
+    "crates/medatat-store",
+    "crates/medatat-sync",
+    "crates/medatat-worker",
+    "crates/medatat-testkit",
+    "crates/medatat-ui",
+    "crates/medatat-cli",
+    "xtask",
+]
+
+[workspace.package]
+edition = "2024"
+rust-version = "1.85"
+license = "Proprietary"
+publish = false
+
+# ---------------------------------------------------------------------------
+# Shared dependency versions. Crates reference these with `workspace = true`.
+# ---------------------------------------------------------------------------
+[workspace.dependencies]
+medatat-core    = { path = "crates/medatat-core" }
+medatat-store   = { path = "crates/medatat-store" }
+medatat-sync    = { path = "crates/medatat-sync" }
+medatat-testkit = { path = "crates/medatat-testkit" }
+
+# Domain — must compile to wasm32-unknown-unknown (medatat-core is shared with the Worker)
+serde        = { version = "1", features = ["derive", "rc"] }
+serde_json   = "1"
+postcard     = { version = "1", features = ["alloc"] }
+uuid         = { version = "1", features = ["v4", "serde", "js"] }
+chrono       = { version = "0.4", default-features = false, features = ["serde", "clock", "wasmbind"] }
+rust_decimal = { version = "1", default-features = false, features = ["serde-str", "std"] }
+thiserror    = "2"
+smallvec     = { version = "1", features = ["serde", "union"] }
+fixedbitset  = "0.5"
+zeroize      = { version = "1", features = ["derive"] }   # optional; `phi` feature
+getrandom    = { version = "0.2", features = ["js"] }   # `js` backend required on wasm32
+sha2         = "0.10"
+
+# Client
+# SQLCipher is enabled by the `phi` feature only. Default builds use plain SQLite.
+rusqlite  = { version = "0.32", features = ["chrono", "serde_json"] }
+lru       = "0.12"
+tracing   = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+async-trait = "0.1"
+reqwest   = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+tokio     = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
+
+# Worker
+worker = "0.8.5"
+
+# CLI
+# Pinned by rev, not by path. An absolute path dependency resolves only on the machine it
+# was written on, and Cargo resolves the whole workspace graph even for `cargo build -p
+# medatat-worker` — so a local path here fails *every* CI job, not just the CLI.
+incurs = { git = "https://github.com/douglance/incurs", rev = "40d88b60aade47f844bcdcb56c5f507b7123bc6c" }
+anyhow = "1"
+clap   = { version = "4", features = ["derive"] }
+
+# Dev
+proptest  = "1"
+criterion = { version = "0.5", features = ["html_reports"] }
+insta     = { version = "1", features = ["json"] }
+tempfile  = "3"
+
+# ---------------------------------------------------------------------------
+# GPUI. See docs/adr/0003-gpui-component.md for the full story.
+#
+# crates.io gpui 0.2.2 is stale and incompatible with current main, which split platform
+# code into the unpublished `gpui_platform` crate, so git dependencies are the only path.
+#
+# THE COMMIT IS PINNED BY Cargo.lock, NOT BY THIS FILE. Do not add a `rev` to the two
+# entries below — see the note directly underneath. Cargo.lock is committed and must never
+# be gitignored; it is the only thing making a GPUI build reproducible.
+# ---------------------------------------------------------------------------
+# NOTE ON THE MISSING `rev`: gpui-component declares its Zed dependencies *unpinned*
+# (default branch). Cargo treats `git+URL` and `git+URL?rev=X` as two distinct sources, so
+# adding a `rev` here puts two copies of gpui in the graph and every gpui type mismatches
+# across the medatat-ui/gpui-component boundary (`Root: Render` unsatisfied, `&mut App`
+# incompatible, ...). `[patch]` cannot fix it — Cargo rejects a patch whose source URL
+# matches the one being patched. So the source spec must match gpui-component's exactly and
+# the commit is pinned by Cargo.lock, which is committed. Bump by editing Cargo.lock's
+# `zed-industries/zed` entries together with the gpui-component rev below.
+[workspace.dependencies.gpui]
+version = "0.2.2"
+git = "https://github.com/zed-industries/zed"
+
+[workspace.dependencies.gpui_platform]
+git = "https://github.com/zed-industries/zed"
+features = ["font-kit", "x11", "wayland"]
+
+[workspace.dependencies.gpui-component]
+git = "https://github.com/longbridge/gpui-component"
+rev = "972a3ebfd01afca7da6d8b6f31c9a51288ea5565"
+features = ["decimal"]
+
+# gpui-component also pulls gpui_macros, gpui_web, and reqwest_client from the Zed repo,
+# and requires this psm patch to build at all. Verified by the M0 probe: 894 packages,
+# links clean on macOS.
+#
+# To bump GPUI: change the gpui-component `rev` above, then update the
+# `zed-industries/zed` entries in Cargo.lock to match whatever gpui-component now tracks.
+# Both must move together, and `cargo build -p medatat-ui` is the only real check.
+[patch.crates-io]
+psm = { git = "https://github.com/rust-lang/stacker", branch = "master" }
+
+# ---------------------------------------------------------------------------
+# Profiles
+# ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# PHI mode. Off by default -- this system currently handles synthetic data only.
+# Turning it on enables SQLCipher, redacting Debug, zeroize on Drop, and core-dump
+# suppression. See docs/12-PHI-READINESS.md.
+#
+#   cargo build --workspace                  # development
+#   cargo build --workspace --features phi   # PHI mode
+#
+# Both configurations are built in CI so the PHI path cannot rot while switched off.
+# ---------------------------------------------------------------------------
+
+[profile.release]
+lto = true
+strip = true
+codegen-units = 1
+# `strip = true` here is fine and is kept for the desktop binary. It is NOT safe for the
+# Worker — it removes the externref table wasm-bindgen needs — which is why the Worker
+# builds with `--profile release-wasm` below rather than `--release`.
+#
+# `panic = "abort"` is absent for GPUI's sake (the desktop side expects unwinding). It was
+# briefly blamed for the Worker bundle failure; it is not the cause, and restoring it does
+# not break the bundle.
+
+# The Worker ships as WASM: 10 MB compressed limit, 1 s startup budget.
+# Optimize for size, not speed. See docs/adr/0004-workers-rs.md.
+[profile.release-wasm]
+inherits = "release"
+opt-level = "z"
+# `strip` MUST stay off here. `strip = "symbols"` (what `strip = true` means) removes the
+# externref table wasm-bindgen needs to generate its catch wrappers, and `worker-build`
+# then dies with `externref table required for catch wrappers` — after a clean
+# `cargo build --target wasm32-unknown-unknown`, which never runs wasm-bindgen and so
+# never sees it. Nothing is lost: `worker-build` runs `wasm-opt` afterwards, which strips
+# the bundle anyway. Measured identical either way at 430 KB gzipped.
+#
+# This is why the Worker builds with `--profile release-wasm` rather than `--release`:
+# `[profile.release]` keeps `strip = true` for the desktop binary, which has no
+# wasm-bindgen step to break.
+strip = false
+
+[profile.bench]
+lto = true
+debug = true          # keep symbols so criterion profiles are readable

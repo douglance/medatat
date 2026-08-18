@@ -1,0 +1,261 @@
+# medatat CI.
+#
+# This workflow is the enforcement AGENTS.md describes. Every gate listed under
+# "Before you commit" has a job here, and the two traps that make a green
+# `cargo test` misleading each have their own job:
+#
+#   - half of `medatat-worker` is behind `#[cfg(target_arch = "wasm32")]`, so
+#     native tests do not compile `routes/`, `store/`, or `case_do.rs` at all
+#     -> the `wasm` job cross-compiles it
+#   - a green wasm32 compile is necessary but not sufficient, because the
+#     bundle step runs wasm-bindgen separately and can fail on its own
+#     -> the `wasm` job bundles the Worker, the real gate
+#
+# Shape follows docs/07-TESTING.md "CI pipeline".
+#
+# The Worker bundles with `--profile release-wasm`, NOT `--release`. Measured
+# cause of `externref table required for catch wrappers`: `[profile.release]`
+# sets `strip = true` (i.e. strip = "symbols"), which removes the externref
+# table wasm-bindgen needs for its catch wrappers. release-wasm inherits
+# release and turns strip off. Bisected against the alternatives: clearing
+# RUSTFLAGS does not fix it, and `panic = "abort"` is not involved.
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+  # Cargo shells out to `git` instead of using its own transport. Without this a
+  # cold job spends minutes cloning ~1 GB of Zed history for GPUI.
+  CARGO_NET_GIT_FETCH_WITH_CLI: true
+
+jobs:
+  # --------------------------------------------------------------------------
+  # Can this workspace even resolve on a machine that is not the author's?
+  # Cheap, fails fast, and gives one clear message instead of six confusing ones.
+  # --------------------------------------------------------------------------
+  preflight:
+    name: preflight (workspace resolves)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Reject absolute path dependencies
+        run: |
+          # A `path = "/..."` dependency resolves only on the machine it was
+          # written on. Cargo resolves the whole workspace graph even for
+          # `cargo build -p <one-crate>`, so a single one of these fails every
+          # job in this file, not just the crate that declares it.
+          if grep -rnE '^[[:space:]]*[A-Za-z0-9_-]+[[:space:]]*=.*\bpath[[:space:]]*=[[:space:]]*"/' \
+               Cargo.toml crates/*/Cargo.toml xtask/Cargo.toml; then
+            echo "::error::Absolute path dependency found (see above). CI runs on a clean \
+          checkout, so this path does not exist. Vendor the crate into the repo, publish it, \
+          or use a git dependency pinned by rev."
+            exit 1
+          fi
+
+      - name: Resolve the dependency graph
+        run: cargo metadata --format-version 1 --locked > /dev/null
+
+  # --------------------------------------------------------------------------
+  # fmt, clippy, and the R15 no-spinner lint.
+  # --------------------------------------------------------------------------
+  check:
+    name: check (fmt, clippy, lint-no-spinner)
+    needs: preflight
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/linux-deps
+      - name: Install the pinned toolchain
+        # rust-toolchain.toml pins 1.96.1 with rustfmt, clippy, and the wasm32
+        # target. Letting rustup read it keeps CI and developers on one version.
+        run: rustup show
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+
+      - run: cargo fmt --all -- --check
+
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+
+      # R15: no spinner, progress bar, skeleton, shimmer, or "Loading…" in medatat-ui.
+      - run: cargo run -p xtask -- lint-no-spinner
+
+  # --------------------------------------------------------------------------
+  # The main test matrix. Windows and Linux are the only way we ever learn
+  # whether they work — ADR-0003 currently admits they are untested.
+  # --------------------------------------------------------------------------
+  test:
+    name: test (${{ matrix.os }})
+    needs: preflight
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - name: Allow long paths (Windows)
+        if: runner.os == 'Windows'
+        # Must run before checkout: the Zed dependency tree has paths that
+        # exceed the legacy 260-character limit.
+        run: git config --global core.longpaths true
+
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/linux-deps
+      - run: rustup show
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+
+      - name: Test
+        # GPUI needs a Vulkan ICD even for the three #[gpui::test] cases, and a
+        # CI runner has no GPU. lavapipe is the software ICD.
+        env:
+          VK_ICD_FILENAMES: ${{ runner.os == 'Linux' && '/usr/share/vulkan/icd.d/lvp_icd.x86_64.json' || '' }}
+        run: cargo test --workspace
+
+  # --------------------------------------------------------------------------
+  # The PHI path. This is the job that matters most: `phi` is off by default, so
+  # nothing else in this file compiles it, and AGENTS.md invariant 11 requires it
+  # to keep working so that turning PHI on later stays a switch, not a project.
+  # --------------------------------------------------------------------------
+  phi:
+    name: phi (feature build + test)
+    needs: preflight
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/linux-deps
+      - run: rustup show
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+
+      - run: cargo build --workspace --features phi
+
+      - name: Test with PHI protections on
+        env:
+          VK_ICD_FILENAMES: /usr/share/vulkan/icd.d/lvp_icd.x86_64.json
+        run: cargo test --workspace --features phi
+
+  # --------------------------------------------------------------------------
+  # The Worker. `cargo test -p medatat-worker` says almost nothing about
+  # routes/, store/, and case_do.rs, and a green wasm32 compile still does not
+  # prove the bundle links. Both are gates here.
+  # --------------------------------------------------------------------------
+  wasm:
+    name: wasm (cross-compile + worker-build)
+    needs: preflight
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup show
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+
+      - name: Cross-compile the Worker
+        # Necessary but NOT sufficient — see the bundle step below.
+        run: cargo build -p medatat-worker --target wasm32-unknown-unknown
+
+      - name: Cache worker-build
+        id: worker-build-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/bin/worker-build
+          key: worker-build-${{ runner.os }}-v0.8.5
+
+      - name: Install worker-build
+        if: steps.worker-build-cache.outputs.cache-hit != 'true'
+        run: cargo install --locked worker-build
+
+      - name: Bundle the Worker
+        # THE gate for this crate. wasm-bindgen runs here and can fail on its
+        # own — observed: `externref table required for catch wrappers`.
+        # `--profile release-wasm` is required: see the note at the top of this
+        # file and the profile comment in Cargo.toml.
+        working-directory: crates/medatat-worker
+        run: worker-build --profile release-wasm
+
+      - name: Report bundle size
+        # M1 criterion (b): compressed bundle under 10 MB, so the number has to
+        # be answerable from a CI run rather than someone's laptop.
+        working-directory: crates/medatat-worker
+        run: |
+          limit=$((10 * 1024 * 1024))
+          status=0
+          {
+            echo "### Worker bundle size"
+            echo
+            echo "| Artifact | Raw | Gzipped |"
+            echo "|---|---:|---:|"
+          } >> "$GITHUB_STEP_SUMMARY"
+          while IFS= read -r wasm; do
+            raw=$(wc -c < "$wasm")
+            gz=$(gzip -9 -c "$wasm" | wc -c)
+            echo "| \`$(basename "$wasm")\` | $raw B | $gz B |" >> "$GITHUB_STEP_SUMMARY"
+            echo "$wasm: raw=${raw}B gzip=${gz}B (limit ${limit}B)"
+            if [ "$gz" -gt "$limit" ]; then
+              echo "::error::$(basename "$wasm") is ${gz} B gzipped, over the 10 MB Workers limit"
+              status=1
+            fi
+          done < <(find build -name '*.wasm' -type f)
+          exit $status
+
+  # --------------------------------------------------------------------------
+  # Benches 1-3 assert their own thresholds and fail the process on regression.
+  # Bench 4 is a placeholder that registers an empty group.
+  #
+  # NEVER relax a threshold to make this pass. A red bench is the failure being
+  # reported, not the obstacle to fixing it.
+  # --------------------------------------------------------------------------
+  bench:
+    name: bench (R13, R14 gates)
+    needs: preflight
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/linux-deps
+      - run: rustup show
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+
+      - run: cargo bench -p medatat-testkit
+
+  # --------------------------------------------------------------------------
+  # The desktop build on all three platforms. ADR-0003 admits Windows and Linux
+  # are untested; this job is the only thing that will ever change that.
+  # --------------------------------------------------------------------------
+  gpui-build:
+    name: gpui-build (${{ matrix.os }})
+    needs: preflight
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - name: Allow long paths (Windows)
+        if: runner.os == 'Windows'
+        run: git config --global core.longpaths true
+
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/linux-deps
+      - run: rustup show
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+
+      - run: cargo build -p medatat-ui

@@ -1,0 +1,30 @@
+# System libraries GPUI needs on Linux, plus a software Vulkan ICD.
+#
+# A no-op on macOS and Windows, so every job can call it unconditionally and the
+# package list lives in exactly one place.
+#
+# lavapipe (mesa-vulkan-drivers) matters because GPUI requires a Vulkan ICD and a
+# CI runner has no GPU. Jobs that actually open a window must also export
+# VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.x86_64.json — installing the
+# driver is not enough on its own.
+
+name: Linux build dependencies
+description: Install the system libraries GPUI needs on Linux. No-op elsewhere.
+
+runs:
+  using: composite
+  steps:
+    - name: Install GPUI system dependencies
+      if: runner.os == 'Linux'
+      shell: bash
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y --no-install-recommends \
+          pkg-config \
+          libssl-dev \
+          libxkbcommon-dev \
+          libwayland-dev \
+          libxcb1-dev \
+          libasound2-dev \
+          libfontconfig1-dev \
+          mesa-vulkan-drivers

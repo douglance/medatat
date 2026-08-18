@@ -1,0 +1,32 @@
+[package]
+name = "medatat-store"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+# The client's system of record. Owns the schema in docs/02-DATA-MODEL.md.
+#
+# Default builds link plain SQLite and pull in neither SQLCipher nor any key
+# handling at all —
+# see docs/12-PHI-READINESS.md.
+[dependencies]
+medatat-core = { workspace = true }
+rusqlite     = { workspace = true }
+postcard     = { workspace = true }
+serde_json   = { workspace = true }
+chrono       = { workspace = true }
+thiserror    = { workspace = true }
+
+# `phi` only. Optional so a default build never compiles them.
+getrandom = { workspace = true, optional = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+
+[features]
+default = []
+# PHI mode: SQLCipher, key from a mode-0600 file beside the database (AGENTS.md rule 11). The redacting `Debug` and zeroizing `Drop` come
+# from medatat-core's own `phi` feature, which this turns on so the two cannot diverge.
+phi = ["dep:getrandom", "rusqlite/bundled-sqlcipher", "medatat-core/phi"]

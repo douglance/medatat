@@ -1,0 +1,84 @@
+//! The client schema, embedded.
+//!
+//! This is the DDL from `docs/02-DATA-MODEL.md`, verbatim except for one addition
+//! documented on `field_value.value_kind` below. It is embedded rather than read from a
+//! file so a shipped binary can create its database with no external assets.
+
+/// Migration 1 — the initial schema.
+pub(crate) const V1: &str = r#"
+CREATE TABLE schema_version (version INTEGER NOT NULL);
+
+-- Form definitions. Not PHI. Serialised FormDef (postcard) for one-shot load.
+CREATE TABLE form (
+  form_id    TEXT PRIMARY KEY,
+  name       TEXT NOT NULL,
+  def_blob   BLOB NOT NULL,
+  config_rev INTEGER NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE patient_case (
+  case_id    TEXT PRIMARY KEY,
+  mrn        TEXT,
+  form_id    TEXT NOT NULL REFERENCES form(form_id),
+  rev        INTEGER NOT NULL,       -- local revision, monotonic
+  synced_rev INTEGER NOT NULL,       -- last rev confirmed by the server
+  assignee   TEXT,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX case_recent   ON patient_case(updated_at DESC);
+CREATE INDEX case_assignee ON patient_case(assignee, updated_at DESC);
+
+-- The hot table. WITHOUT ROWID makes the PK the clustered storage order, so one case's
+-- ~1000 values occupy a handful of contiguous pages. This is what makes R13 real, and
+-- `load_case_values` asserts the plan is a PK range scan.
+--
+-- `value_kind` is an addition to the DDL in 02-DATA-MODEL.md. Reading a row back has to
+-- reconstruct the exact `Value` variant, and the four typed columns cannot do that alone:
+-- Text, Radio, and Select all land in `value_text`, so a read cannot tell `Value::Text`
+-- from `Value::Opt`. The two ways to recover it are (a) this discriminant column or
+-- (b) looking the field up in the cached FormDef. (b) was rejected: it would put a
+-- `form` join and a postcard decode of the whole form definition on the R13 read path,
+-- and would make a case unreadable whenever its form definition had not been synced yet.
+-- The column stores the `Value` discriminant, not `FieldKind::tag()`, because the variant
+-- is what a read must rebuild and it is derivable from the value alone.
+CREATE TABLE field_value (
+  case_id       TEXT    NOT NULL REFERENCES patient_case(case_id) ON DELETE CASCADE,
+  field_id      TEXT    NOT NULL,
+  value_kind    TEXT    NOT NULL
+                CHECK (value_kind IN ('null','text','num','date','time','opt')),
+  value_text    TEXT,
+  value_numeric TEXT,                -- decimal string, never REAL
+  value_date    TEXT,                -- YYYY-MM-DD
+  value_time    TEXT,                -- HH:MM
+  rev           INTEGER NOT NULL,
+  pending       INTEGER NOT NULL DEFAULT 0,   -- 1 = local edit not yet acked by server
+  PRIMARY KEY (case_id, field_id)
+) WITHOUT ROWID;
+
+-- Coalescing outbox: PK is (case_id, field_id) so 40 keystrokes collapse to one row.
+CREATE TABLE outbox (
+  case_id         TEXT    NOT NULL,
+  field_id        TEXT    NOT NULL,
+  value_blob      BLOB    NOT NULL,  -- postcard-encoded medatat_core::Value
+  base_rev        INTEGER NOT NULL,  -- server rev the edit was made against
+  attempts        INTEGER NOT NULL DEFAULT 0,
+  next_attempt_at TEXT    NOT NULL,
+  last_error      TEXT,
+  PRIMARY KEY (case_id, field_id)
+) WITHOUT ROWID;
+CREATE INDEX outbox_ready ON outbox(next_attempt_at);
+
+-- Unresolved per-field conflicts. Survives restart; rendered as an inline strip.
+CREATE TABLE conflict (
+  case_id    TEXT NOT NULL,
+  field_id   TEXT NOT NULL,
+  mine       BLOB NOT NULL,
+  theirs     BLOB NOT NULL,
+  theirs_by  TEXT,
+  theirs_at  TEXT,
+  PRIMARY KEY (case_id, field_id)
+) WITHOUT ROWID;
+
+CREATE TABLE sync_state (k TEXT PRIMARY KEY, v TEXT);
+"#;

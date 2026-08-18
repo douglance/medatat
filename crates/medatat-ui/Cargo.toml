@@ -1,0 +1,36 @@
+[package]
+name = "medatat-ui"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "medatat-ui"
+path = "src/main.rs"
+
+# The ONLY crate that may `use gpui`. Every gpui-component call goes through
+# medatat_ui::widgets::* so an upstream break is a one-file fix.
+# See docs/adr/0003-gpui-component.md.
+[dependencies]
+medatat-core  = { workspace = true }
+medatat-store = { workspace = true }
+medatat-sync  = { workspace = true }
+gpui           = { workspace = true }
+gpui_platform  = { workspace = true }
+gpui-component = { workspace = true }
+chrono    = { workspace = true }
+anyhow    = { workspace = true }
+tracing   = { workspace = true }
+tracing-subscriber = { workspace = true }
+# `phi` only: suppressing core dumps needs setrlimit. Optional so the default build stays
+# free of it. Rule 11 of AGENTS.md — never a credential store — is unaffected.
+libc      = { version = "0.2", optional = true }
+
+[dev-dependencies]
+medatat-testkit = { workspace = true }
+
+[features]
+default = []
+phi = ["medatat-core/phi", "medatat-store/phi", "medatat-sync/phi", "dep:libc"]

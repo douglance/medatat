@@ -1,0 +1,30 @@
+[package]
+name = "medatat-core"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+# No I/O dependencies. This crate compiles to wasm32-unknown-unknown and is shared
+# verbatim with the Worker. See docs/11-CRATE-GUIDE.md.
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }
+rust_decimal = { workspace = true }
+thiserror = { workspace = true }
+smallvec = { workspace = true }
+fixedbitset = { workspace = true }
+uuid = { workspace = true }
+zeroize = { workspace = true, optional = true }
+
+[dev-dependencies]
+proptest = { workspace = true }
+postcard = { workspace = true }
+
+[features]
+default = []
+# Enables PHI protections: redacting Debug and zeroize on Drop.
+# See docs/12-PHI-READINESS.md.
+phi = ["dep:zeroize"]

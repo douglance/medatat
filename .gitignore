@@ -1,0 +1,26 @@
+/target
+**/*.rs.bk
+Cargo.lock.orig
+
+# Cloudflare
+.wrangler/
+.dev.vars
+build/
+worker/shim.mjs
+
+# Local data — may contain PHI. Never commit.
+*.db
+*.db-wal
+*.db-shm
+/corpus/
+/bench-results/
+
+# Editors / OS
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# Packaging output
+/dist/
+/release/

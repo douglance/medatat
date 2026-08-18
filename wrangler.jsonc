@@ -1,0 +1,55 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "medatat",
+  "main": "build/worker/shim.mjs",
+  "compatibility_date": "2026-08-01",
+  "account_id": "88f9cbf5c4f4e217079bcbf0ca6cb181",
+
+  // `--profile release-wasm`, NOT `--release`. The release profile sets `strip = true`
+  // for the desktop binary, which removes the externref table wasm-bindgen needs for its
+  // catch wrappers; worker-build then fails with `externref table required for catch
+  // wrappers`. release-wasm inherits release, turns strip off, and sets opt-level = "z".
+  // See the profile comment in Cargo.toml.
+  "build": {
+    "command": "cargo install -q worker-build && worker-build --profile release-wasm"
+  },
+
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "medatat",
+      // wrangler d1 create medatat
+      "database_id": "REPLACE_AFTER_D1_CREATE"
+    }
+  ],
+
+  "kv_namespaces": [
+    {
+      "binding": "AUTH",
+      // wrangler kv namespace create MEDATAT_AUTH
+      "id": "REPLACE_AFTER_KV_CREATE"
+    }
+  ],
+
+  // Requires wrangler >= 4.123.0 and cetify.email onboarded:
+  //   wrangler email sending enable cetify.email
+  "send_email": [{ "name": "EMAIL" }],
+
+  "durable_objects": {
+    "bindings": [{ "name": "CASE", "class_name": "CaseDO" }]
+  },
+
+  // new_sqlite_classes, NOT new_classes. SQLite-backed Durable Objects require it,
+  // and the choice is not reversible without a new class name.
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["CaseDO"] }],
+
+  "observability": { "enabled": true },
+
+  "vars": {
+    "MAIL_FROM": "noreply@cetify.email",
+    "MAIL_FROM_NAME": "medatat",
+    "CODE_TTL_SECONDS": "600",
+    "SESSION_TTL_SECONDS": "43200"
+  }
+  // Secrets (wrangler secret put): SESSION_PEPPER
+}

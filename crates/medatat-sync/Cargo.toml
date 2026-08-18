@@ -1,0 +1,28 @@
+[package]
+name = "medatat-sync"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+# Deliberately does NOT depend on reqwest. Transport is a trait so the engine tests
+# against a mock and medatat-cli can reuse it. See docs/11-CRATE-GUIDE.md.
+[dependencies]
+medatat-core = { workspace = true }
+medatat-store = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+chrono = { workspace = true }
+async-trait = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }
+medatat-testkit = { workspace = true }
+async-trait = { workspace = true }
+
+[features]
+default = []
+phi = ["medatat-core/phi", "medatat-store/phi"]

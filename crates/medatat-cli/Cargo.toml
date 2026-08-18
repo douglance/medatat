@@ -1,0 +1,22 @@
+[package]
+name = "medatat-cli"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "medatat"
+path = "src/main.rs"
+
+[dependencies]
+medatat-core = { workspace = true }
+medatat-testkit = { workspace = true }
+incurs = { workspace = true }
+reqwest = { workspace = true }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+async-trait = { workspace = true }
