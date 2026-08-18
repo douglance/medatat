@@ -23,6 +23,7 @@ runs:
           pkg-config \
           libssl-dev \
           libxkbcommon-dev \
+          libxkbcommon-x11-dev \
           libwayland-dev \
           libxcb1-dev \
           libasound2-dev \

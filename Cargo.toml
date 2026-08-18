@@ -44,7 +44,11 @@ sha2         = "0.10"
 
 # Client
 # SQLCipher is enabled by the `phi` feature only. Default builds use plain SQLite.
-rusqlite  = { version = "0.32", features = ["chrono", "serde_json"] }
+# `bundled` compiles SQLite from source rather than linking the system one. Without it
+# the Windows link fails with LNK1181: cannot open input file 'sqlite3.lib' -- macOS and
+# most Linux distributions ship a system SQLite and Windows does not. Bundling also pins
+# the engine version, so behaviour cannot drift with whatever the host happens to have.
+rusqlite  = { version = "0.32", features = ["bundled", "chrono", "serde_json"] }
 lru       = "0.12"
 tracing   = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
