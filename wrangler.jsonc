@@ -24,7 +24,7 @@
       "binding": "DB",
       "database_name": "medatat",
       // wrangler d1 create medatat
-      "database_id": "REPLACE_AFTER_D1_CREATE",
+      "database_id": "07163bbb-713a-445e-8bac-c564ff428049",
       // Relative to this file. Migrations live with the crate that owns the schema.
       "migrations_dir": "crates/medatat-worker/migrations"
     }
@@ -34,7 +34,7 @@
     {
       "binding": "AUTH",
       // wrangler kv namespace create MEDATAT_AUTH
-      "id": "REPLACE_AFTER_KV_CREATE"
+      "id": "f5d94915e3e7432db4eb32c23e1c5557"
     }
   ],
 

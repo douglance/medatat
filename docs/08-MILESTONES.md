@@ -13,9 +13,9 @@ tri-platform viability and the latency claim — are settled in the first two we
 | | | |
 |---|---|---|
 | **M0** Platform bring-up | 🟡 | macOS only. Windows and Linux have never been built |
-| **M1** Perf gate | 🟡 | Benches 1–2 pass and are measured; bundle 391 KB gz; `send_email` verified locally. **Seeding throughput unmeasurable locally** |
+| **M1** Perf gate | 🟡 | Benches 1–2 measured; **deployed, 407 KB gz, startup 2 ms**. Seeding throughput still needs a run against the deployment |
 | **M2** Core + store | ✅ | Validated at 500k rows — the margin is flat |
-| **M3** Worker + sync | ✅ | API verified live over HTTP; `smoke.sh` green |
+| **M3** Worker + sync | ✅ | **Deployed to `medatat.doug-lance.workers.dev`**; contract verified against production |
 | **M4** Runtime renderer | ✅ | All seven field kinds, 1–3 columns |
 | **M5** Form builder | 🟡 | Items 1–6, 8, 9 done. Item 7 needs two machines and live sync |
 | **M6** Worklist + keyboard | 🟡 | Built and unit-tested; **never exercised on Windows or Linux**, and key routing is demonstrably platform-specific |
@@ -101,7 +101,13 @@ rework:
       the gate; `--release` is the wrong profile for it.
       **Measured 2026-08-17 on macOS: 1.01 MB raw, 0.38 MB gzipped** against the 10 MB
       limit — 26x margin. Startup still unmeasured; needs a real deploy.
-- [ ] `wrangler deploy --dry-run` reports bundle size and startup within limits.
+- [x] **Deployed.** `https://medatat.doug-lance.workers.dev`, version `b00d2770`.
+      **1088 KiB raw / 407.73 KiB gzipped** against the 10 MB limit, and **startup 2 ms**
+      against the 1 s budget — the number that could not be obtained locally. D1
+      `07163bbb`, KV `f5d94915`, migrations applied remotely (15 commands).
+      Contract verified in production: `/health` 200 with the documented envelope,
+      `/config` and `/cases` 401 unauthenticated, unknown route 404, and
+      `/auth/request` **204 for an unknown email** — no account enumeration.
 - [ ] `EXPLAIN QUERY PLAN` confirms the case-load query is a PK range scan.
 
 **If Benches 1 or 2 miss, stop and revisit [01-ARCHITECTURE.md](01-ARCHITECTURE.md) before
