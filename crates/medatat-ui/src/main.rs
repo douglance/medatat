@@ -18,11 +18,12 @@ use gpui::{
     WindowBounds, WindowOptions, div, prelude::FluentBuilder as _, px, size,
 };
 use gpui_component::{h_flex, v_flex};
-use medatat_core::{CaseId, CaseRev, ConfigRev, FormDef};
+use medatat_core::{CaseId, ConfigRev, FormDef};
 use medatat_store::Store;
 use std::rc::Rc;
 use std::sync::Arc;
 
+use builder::BuilderView;
 use form::FormView;
 use worklist::WorklistView;
 
@@ -131,6 +132,9 @@ struct Workspace {
     worklist: Entity<WorklistView>,
     /// The open case editor, or `None` while the worklist is showing.
     form: Option<Entity<FormView>>,
+    /// The form builder (R4). Takes the screen when open.
+    builder: Option<Entity<BuilderView>>,
+    def: Option<Arc<FormDef>>,
     message: SharedString,
     focus: FocusHandle,
 }
@@ -139,9 +143,12 @@ impl Workspace {
     fn new(store: Arc<Store>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         // On first run there is nothing to show, so seed a demo form and caseload rather
         // than an empty window. Both are replaced by config and caseload sync.
-        let message = match Self::load_or_seed(&store) {
-            Ok(def) => SharedString::from(format!("{} fields", def.field_count())),
-            Err(e) => SharedString::from(format!("no form available: {e}")),
+        let (def, message) = match Self::load_or_seed(&store) {
+            Ok(def) => {
+                let msg = SharedString::from(format!("{} fields · ⌘B builder", def.field_count()));
+                (Some(def), msg)
+            }
+            Err(e) => (None, SharedString::from(format!("no form available: {e}"))),
         };
 
         let on_open = Self::on_open_case(cx);
@@ -153,9 +160,24 @@ impl Workspace {
             store,
             worklist,
             form: None,
+            builder: None,
+            def,
             message,
             focus: cx.focus_handle(),
         }
+    }
+
+    /// Opens the form builder on the current definition.
+    ///
+    /// The spec gates the builder on `role = admin` and says the UI is not the enforcement
+    /// point — the API returns 403 regardless. There is no session yet, so there is no role
+    /// to check; this opens for anyone until login exists.
+    fn open_builder(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(def) = self.def.clone() else { return };
+        self.flush_open_case(cx);
+        let store = Arc::clone(&self.store);
+        self.builder = Some(cx.new(|cx| BuilderView::new(store, def, window, cx)));
+        cx.notify();
     }
 
     /// The callback the worklist calls when a row is clicked.
@@ -215,6 +237,15 @@ impl Workspace {
     fn on_key(&mut self, ev: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         let mods = &ev.keystroke.modifiers;
         match ev.keystroke.key.as_str() {
+            "b" if mods.secondary() => {
+                if self.builder.is_some() {
+                    self.builder = None;
+                } else {
+                    self.open_builder(window, cx);
+                }
+                cx.notify();
+                cx.stop_propagation();
+            }
             // Next / previous case. The step flushes through `open_case`.
             "j" | "k" if mods.secondary() => {
                 let delta = if ev.keystroke.key == "j" { 1 } else { -1 };
@@ -222,6 +253,11 @@ impl Workspace {
                 if let Some(case_id) = next {
                     self.open_case(case_id, window, cx);
                 }
+                cx.stop_propagation();
+            }
+            "escape" if self.builder.is_some() => {
+                self.builder = None;
+                cx.notify();
                 cx.stop_propagation();
             }
             // Escape leaves the case — unless the field palette has the keyboard, in which
@@ -258,19 +294,41 @@ impl Workspace {
 
 /// Seeds a demo caseload so the worklist is not empty before caseload sync exists.
 ///
-/// Synthetic and obviously so — the MRNs are sequential. Real cases arrive from the server.
+/// Every value comes from `medatat-testkit` — rule 10 of AGENTS.md says synthetic data has
+/// exactly one source, and the moment demo data has a second one the two drift. Behind the
+/// `demo` feature so the scaffolding is one flag away from gone.
+#[cfg(feature = "demo")]
 fn seed_cases(store: &Store, def: &Arc<FormDef>) -> Result<()> {
+    use medatat_core::CaseRev;
     use medatat_core::wire::CaseSummary;
-    for n in 1..=50 {
+    use medatat_testkit::{synthetic_case, synthetic_mrn};
+
+    for n in 1..=50u64 {
+        let case_id = CaseId::new();
         store.upsert_case(&CaseSummary {
-            case_id: CaseId::new(),
-            mrn: format!("MRN-{n:04}"),
+            case_id,
+            // `SYN-MRN-…`, deliberately unmistakable for a real institution's format.
+            mrn: synthetic_mrn(n),
             form_id: def.form_id,
             assignee: Some(DEMO_ASSIGNEE.into()),
             rev: CaseRev::ZERO,
             updated_at: format!("2026-08-{:02}T09:{:02}:00Z", (n % 28) + 1, n % 60),
         })?;
+        // Values too, so the worklist's `filled / total` column shows a real spread rather
+        // than 50 identical zeroes.
+        if n % 3 != 0 {
+            let values: Vec<_> = synthetic_case(def, n)
+                .into_iter()
+                .take(if n % 2 == 0 { def.field_count() } else { 2 })
+                .collect();
+            store.apply_local(case_id, &values, CaseRev::ZERO)?;
+        }
     }
+    Ok(())
+}
+
+#[cfg(not(feature = "demo"))]
+fn seed_cases(_: &Store, _: &Arc<FormDef>) -> Result<()> {
     Ok(())
 }
 
@@ -285,8 +343,12 @@ impl Render for Workspace {
                     .w_full()
                     .flex_1()
                     .overflow_hidden()
-                    .when_some(self.form.clone(), |d, f| d.child(f))
-                    .when(self.form.is_none(), |d| d.child(self.worklist.clone())),
+                    // Builder, then open case, then the worklist.
+                    .when_some(self.builder.clone(), |d, b| d.child(b))
+                    .when(self.builder.is_none(), |d| {
+                        d.when_some(self.form.clone(), |d, f| d.child(f))
+                            .when(self.form.is_none(), |d| d.child(self.worklist.clone()))
+                    }),
             )
             .child(
                 // The permitted status surface: peripheral chrome, never over content.

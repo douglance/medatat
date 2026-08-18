@@ -49,7 +49,7 @@ Owned by `medatat-store`. This is the UI's system of record. Location:
 | Linux | `$XDG_DATA_HOME/medatat/medatat.db` (fallback `~/.local/share/medatat/`) |
 | Windows | `%APPDATA%\medatat\medatat.db` |
 
-The implementation adds one column to `field_value` beyond the sketch below:
+`field_value` carries one column the original sketch did not:
 **`value_kind`**, holding the `Value` discriminant. It is necessary because Text, Radio,
 and Select all land in `value_text`, so the typed columns alone cannot tell `Value::Text`
 from `Value::Opt` on read. The alternative — looking the field up in the cached `FormDef` —
@@ -71,11 +71,11 @@ PRAGMA cache_size   = -65536;   -- 64 MiB
 
 CREATE TABLE schema_version (version INTEGER NOT NULL);
 
--- Form definitions. Not PHI. Serialized FormDef (postcard) for one-shot load.
+-- Form definitions. Not PHI. Serialised FormDef (JSON) for one-shot load.
 CREATE TABLE form (
   form_id    TEXT PRIMARY KEY,
   name       TEXT NOT NULL,
-  def_blob   BLOB NOT NULL,          -- postcard-encoded medatat_core::FormDef
+  def_blob   BLOB NOT NULL,          -- JSON-encoded medatat_core::FormDef
   config_rev INTEGER NOT NULL,       -- server config version this was fetched at
   updated_at TEXT NOT NULL
 );
@@ -97,6 +97,8 @@ CREATE INDEX case_assignee ON patient_case(assignee, updated_at DESC);
 CREATE TABLE field_value (
   case_id       TEXT    NOT NULL REFERENCES patient_case(case_id) ON DELETE CASCADE,
   field_id      TEXT    NOT NULL,
+  value_kind    TEXT    NOT NULL     -- Value discriminant; see the note above
+                CHECK (value_kind IN ('null','text','num','date','time','opt')),
   value_text    TEXT,
   value_numeric TEXT,                -- decimal string, never REAL
   value_date    TEXT,                -- YYYY-MM-DD
@@ -243,26 +245,36 @@ values never touch D1 — that is the whole point of the topology.
 
 ## Store 3 — CaseDO SQLite (R16)
 
-One Durable Object per `case_id`, created with `jurisdiction("us")`.
+One Durable Object per `case_id`, addressed by `idFromName(case_id)` so the same case
+always reaches the same object without an id round-trip through D1.
+
+**No `jurisdiction("us")`.** The Workers API accepts a jurisdiction only on `newUniqueId()`
+and rejects it with `idFromName()`. Deterministic addressing is what the rest of the system
+depends on, so it wins; pinning a jurisdiction would mean storing each generated id in
+`case_index` and looking it up on every call. If data residency becomes a requirement, that
+is the trade to revisit.
 
 ```rust
 #[durable_object]
-pub struct CaseDO { sql: SqlStorage, initialized: bool }
+pub struct CaseDO { sql: SqlStorage, env: Env }
 
 impl DurableObject for CaseDO {
-    fn new(state: State, _env: Env) -> Self {
-        // NOTE: no DDL here. Schema is created lazily on first write.
+    fn new(state: State, env: Env) -> Self {
+        // NOTE: no DDL here. Schema is created lazily on the first write.
         // Running CREATE TABLE in the constructor puts DDL on every cold-start path.
-        Self { sql: state.storage().sql(), initialized: false }
+        // `env` is kept so the DO can update its own `case_index` row in D1 after a write.
+        Self { sql: state.storage().sql(), env }
     }
     async fn fetch(&self, req: Request) -> Result<Response> { /* see 03-API.md */ }
 }
 ```
 
 ```sql
--- Created lazily, on first write only.
+-- Created lazily, on the first write only. `POST /cases` writes `meta`, so in practice the
+-- schema appears when the case is created rather than when its first value lands.
 CREATE TABLE IF NOT EXISTS field_value (
   field_id      TEXT PRIMARY KEY,     -- case_id is implicit: it IS this object
+  kind          TEXT NOT NULL,        -- FieldKind::tag(); see the note below
   value_text    TEXT,
   value_numeric TEXT,
   value_date    TEXT,
@@ -273,8 +285,21 @@ CREATE TABLE IF NOT EXISTS field_value (
 ) WITHOUT ROWID;
 
 CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT);
--- keys: rev, form_id, mrn, assignee, created_at
+-- keys: rev, case_id, form_id, mrn, assignee, created_at
 ```
+
+The DO's `kind` column solves the same problem as the client's `value_kind`, but stores a
+different thing, and the two are easy to confuse:
+
+| | client `field_value.value_kind` | DO `field_value.kind` |
+|---|---|---|
+| stores | the `Value` discriminant (`text`, `num`, `opt`, …) | `FieldKind::tag()` (`text`, `numeric`, `select`, …) |
+| recovered from | the value alone | the field definition sent with the write |
+
+Both exist because Text, Radio, and Select all land in `value_text`, so the typed columns
+cannot tell `Value::Text` from `Value::Opt` on read. The alternative for the DO — shipping
+field definitions in on every read — would cost a D1 hit per `GET` to recover information
+the row can carry in a few bytes.
 
 ### Revision semantics
 

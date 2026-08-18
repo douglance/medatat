@@ -24,6 +24,10 @@ chrono    = { workspace = true }
 anyhow    = { workspace = true }
 tracing   = { workspace = true }
 tracing-subscriber = { workspace = true }
+# Demo seeding only. Rule 10 of AGENTS.md: synthetic data comes from medatat-testkit and
+# nowhere else, so the demo caseload is generated there rather than hand-written here.
+# Drop `demo` from `default` once login and caseload sync land.
+medatat-testkit = { workspace = true, optional = true }
 # `phi` only: suppressing core dumps needs setrlimit. Optional so the default build stays
 # free of it. Rule 11 of AGENTS.md — never a credential store — is unaffected.
 libc      = { version = "0.2", optional = true }
@@ -32,5 +36,6 @@ libc      = { version = "0.2", optional = true }
 medatat-testkit = { workspace = true }
 
 [features]
-default = []
+default = ["demo"]
+demo = ["dep:medatat-testkit"]
 phi = ["medatat-core/phi", "medatat-store/phi", "medatat-sync/phi", "dep:libc"]

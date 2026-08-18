@@ -9,7 +9,9 @@ hand-written duplicate schema anywhere.
 ## Conventions
 
 - **Auth:** `Authorization: Bearer <token>` on everything except `/auth/*` and `/health`.
-- **Envelope:** every response is `{ "ok": bool, "data": T | null, "error": E | null }`.
+- **Envelope:** every response is `{ "ok": bool, "data": T, "error": E }`, where the unused
+  half is **omitted entirely** rather than sent as `null` — a success body has no `error`
+  key at all, and a failure body has no `data` key. Branch on `ok`, not on key presence.
 - **Errors:** `{"ok": false, "error": {"code": "...", "message": "...", "detail": {...}}}`.
 - **Time:** all timestamps are RFC-3339 UTC strings.
 - **Ids:** UUIDs as lowercase hyphenated strings.
@@ -103,48 +105,79 @@ Every mutation bumps `config_version.rev` in the same D1 batch.
 { "ok": true, "data": {
     "config_rev": 41,
     "forms": [{
-      "form_id": "…", "key": "intake", "name": "Intake",
+      "form_id": "…", "name": "Intake",
       "sections": [{
-        "section_id": "…", "name": "Demographics", "ordinal": 0,
-        "columns": 2,
+        "section_id": "…", "title": "Demographics", "ordinal": 0,
+        "columns": 2, "default_collapsed": false,
         "fields": [{
-          "field_id": "…", "key": "dob", "kind": "date",
-          "config": {}, "options": [],
-          "ordinal": 0, "col_span": 1, "label": "Date of birth", "required": true
+          "field": {
+            "field_id": "…", "key": "dob",
+            "kind": { "kind": "date" }
+          },
+          "label": "Date of birth", "ordinal": 0, "col_span": 1, "required": true
         }]
       }]
     }]
 } }
 ```
 
-`kind` is one of `text | numeric | date | time | radio | select | textarea` (R5–R11).
-`config` is kind-specific:
+The shape is `medatat_core::wire::ConfigDelta` serialised directly — this body is the
+`FormDef` tree, not a separate DTO, which is what keeps client and Worker from drifting.
+Three consequences are easy to get wrong when writing a client:
 
-| kind | `config` shape |
-|---|---|
-| `text` | `{ "max_len": 255 }` |
-| `textarea` | `{ "rows": 4, "max_len": 4000 }` |
-| `numeric` | `{ "min": "0", "max": "300", "scale": 2 }` — min/max are decimal **strings** |
-| `date`, `time` | `{}` |
-| `radio`, `select` | `{ "searchable": true }`; choices come from `options` |
+- **`sections[].fields[]` are *placements*, not fields.** Each entry is a `SectionField`,
+  so the definition is nested under `.field` and the id is `.field.field_id`.
+- **`kind` is an internally-tagged enum**, so the discriminant is `.field.kind.kind`, and
+  the kind-specific configuration is flattened alongside it rather than sitting in a
+  separate `config` object. A numeric field reads
+  `"kind": {"kind":"numeric","min":"0","max":"300","scale":2}`, and a select reads
+  `"kind": {"kind":"select","options":[{"code":"M","label":"Male","ordinal":0}],"searchable":true}`.
+- **A section's heading is `title`**, not `name`. `name` is what the *request* bodies below
+  use, because that is the D1 column; the response carries `title` because that is the
+  `SectionDef` field. They are the same string.
+
+`kind` is one of `text | numeric | date | time | radio | select | textarea` (R5–R11).
+The kind-specific keys are flattened into the `kind` object on the wire, and stored in
+D1's `field.config` column as the JSON below:
+
+| kind | keys alongside `"kind"` | `field.config` column |
+|---|---|---|
+| `text` | `max_len` | `{ "max_len": 255 }` |
+| `textarea` | `rows`, `max_len` | `{ "rows": 4, "max_len": 4000 }` |
+| `numeric` | `min`, `max`, `scale` | `{ "min": "0", "max": "300", "scale": 2 }` — min/max are decimal **strings** |
+| `date`, `time` | none | `{}` |
+| `radio` | `options` | `{}` — choices live in the `field_option` table |
+| `select` | `options`, `searchable` | `{ "searchable": true }` |
 
 Config is small enough that partial sync is not worth the complexity. The client stores
 `config_rev` and re-fetches wholesale when it changes.
 
 ### Form, section, field mutations
 
-| Method | Path | Body | Notes |
-|---|---|---|---|
-| `POST` | `/config/forms` | `{key, name}` | → `{form_id}` |
-| `PATCH` | `/config/forms/{form_id}` | `{name?, archived?}` | |
-| `POST` | `/config/forms/{form_id}/sections` | `{name, ordinal, columns}` | `columns` ∈ 1..3 (R12) |
-| `PATCH` | `/config/sections/{section_id}` | `{name?, ordinal?, columns?}` | **Reducing `columns` clamps every child `col_span`** in the same transaction |
-| `DELETE` | `/config/sections/{section_id}` | | Cascades placements. **Never deletes values** |
-| `POST` | `/config/fields` | `{key, kind, config, options?}` | → `{field_id}` |
-| `PATCH` | `/config/fields/{field_id}` | `{config?, options?}` | **`kind` is not patchable** — see below |
-| `POST` | `/config/sections/{section_id}/fields` | `{field_id, ordinal, col_span, label, required}` | `col_span <= section.columns`, else `422` |
-| `PATCH` | `/config/sections/{sid}/fields/{fid}` | `{ordinal?, col_span?, label?, required?}` | |
-| `DELETE` | `/config/sections/{sid}/fields/{fid}` | | Removes the placement only. **Values survive** |
+| Method | Path | Body | OK | Notes |
+|---|---|---|---|---|
+| `POST` | `/config/forms` | `{key, name}` | `201 {form_id}` | |
+| `PATCH` | `/config/forms/{form_id}` | `{name?, archived?}` | `204` | |
+| `POST` | `/config/forms/{form_id}/sections` | `{name, ordinal, columns}` | `201 {section_id}` | `columns` ∈ 1..3 (R12) |
+| `PATCH` | `/config/sections/{section_id}` | `{name?, ordinal?, columns?}` | `204` | **Reducing `columns` clamps every child `col_span`** in the same transaction |
+| `DELETE` | `/config/sections/{section_id}` | | `204` | Cascades placements. **Never deletes values** |
+| `POST` | `/config/fields` | `{key, kind, …kind keys}` | `201 {field_id}` | The kind keys are **flattened**, not nested under `config` — see below |
+| `PATCH` | `/config/fields/{field_id}` | `{config?, options?}` | `204` | **`kind` is not patchable** — see below. Here `config` *is* a nested object; its keys are merged over the stored ones |
+| `POST` | `/config/sections/{section_id}/fields` | `{field_id, ordinal, col_span, label, required}` | `204` | `col_span <= section.columns`, else `422` |
+| `PATCH` | `/config/sections/{sid}/fields/{fid}` | `{ordinal?, col_span?, label?, required?}` | `204` | An absent key keeps its stored value; `col_span` is re-validated even when the body does not mention it |
+| `DELETE` | `/config/sections/{sid}/fields/{fid}` | | `204` | Removes the placement only. **Values survive** |
+
+`POST /config/fields` takes a flattened `CreateFieldReq`, so the kind keys sit beside
+`kind` rather than inside a `config` object — the same shape the `GET /config` response
+uses:
+
+```json
+{ "key": "dose", "kind": "numeric", "min": "0", "max": "300", "scale": 2 }
+{ "key": "sex",  "kind": "radio",   "options": [{"code":"M","label":"Male","ordinal":0}] }
+```
+
+`PATCH /config/fields/{field_id}` is the one place `config` *is* a nested object, because
+it is a partial merge over what is stored rather than a whole definition.
 
 **`kind` is immutable.** Attempting to change it returns `422` with
 `{"code":"validation","message":"field kind is immutable; create a replacement field"}`.
@@ -176,8 +209,10 @@ Reads `case_index` in D1. Eventually consistent — see
 
 → `201 { "ok": true, "data": { "case_id": "…", "rev": 0 } }`
 
-Creates the `CaseDO` (lazily — the object materialises on first write) and inserts the
-`case_index` row.
+Inserts the `case_index` row, then calls the `CaseDO` to record `mrn`, `form_id`,
+`assignee`, and `created_at` in its `meta` table. That first `meta` write is what creates
+the DO's schema — no DDL runs in the object's constructor, which is on every cold-start
+path. The case starts at `rev` 0; the first *value* write takes it to 1.
 
 ### `GET /cases/{case_id}/values?since_rev=<n>`
 
@@ -251,9 +286,23 @@ Admin-only. Used by `medatat-cli` for the perf corpus and by the export path.
 
 | Method | Path | Purpose |
 |---|---|---|
-| `POST` | `/bulk/cases` | Create up to 100 cases with values in one request. Fans out to DOs |
-| `GET` | `/bulk/export?form_id=…&cursor=…` | Stream cases as NDJSON for offline analysis. See [10-LIMITATIONS.md](10-LIMITATIONS.md#1-cross-case-reporting-is-not-built) |
-| `POST` | `/admin/reindex` | Walk DOs and rebuild `case_index`. Long-running; returns a job id |
+| `POST` | `/bulk/cases` | Create up to 100 cases in one request. Body `{cases: [{mrn, form_id, assignee?}]}` → `201 {created: [case_id, …]}` |
+| `GET` | `/bulk/export?form_id=…&cursor=…&limit=…` | Stream the worklist index as NDJSON, one `CaseSummary` per line, `Content-Type: application/x-ndjson`. See [10-LIMITATIONS.md](10-LIMITATIONS.md#1-cross-case-reporting-is-not-built) |
+| `POST` | `/admin/reindex` | **Not implemented.** Returns `404` |
+
+Two of these do less than their names suggest, and a client should not assume otherwise:
+
+- **`/bulk/cases` carries no values.** It creates `case_index` rows and nothing else — it
+  does not fan out to the Durable Objects, so the cases it creates are empty until
+  something writes to them through `POST /cases/{case_id}/values`. Seeding a corpus with
+  values is therefore still a per-case round trip.
+- **`/bulk/export` exports the index, not the data.** Every line is a `CaseSummary`
+  — `case_id`, `mrn`, `form_id`, `assignee`, `rev`, `updated_at` — because the values live
+  in the DOs and are not reachable from a D1 scan. It is a manifest, not a data export.
+- **`/admin/reindex` answers `404` with an explanation.** Walking 100k Durable Objects
+  needs a Queue or an Alarm binding to survive the Worker CPU budget, and neither is bound
+  in `wrangler.jsonc` yet. Returning a job id for work that never started would be worse
+  than saying so.
 
 ---
 
@@ -262,13 +311,26 @@ Admin-only. Used by `medatat-cli` for the perf corpus and by the export path.
 ```rust
 // medatat-core::wire — shared by client, Worker, and CLI. Never duplicated.
 #[derive(Serialize, Deserialize)]
-pub struct Envelope<T> { pub ok: bool, pub data: Option<T>, pub error: Option<ApiError> }
+pub struct Envelope<T> {
+    pub ok: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub data: Option<T>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<ApiError>,
+}
 
 #[derive(Serialize, Deserialize)]
 pub struct ApiError { pub code: ErrorCode, pub message: String, pub detail: Option<JsonValue> }
 
 #[derive(Serialize, Deserialize)]
-pub struct ValueRow { pub field_id: FieldId, pub value: Value, pub rev: CaseRev }
+pub struct ValueRow {
+    pub field_id: FieldId,
+    pub value: Value,
+    pub rev: CaseRev,
+    // Present on a conflict response; omitted on a plain read.
+    pub updated_by: Option<ActorId>,
+    pub updated_at: Option<String>,
+}
 
 #[derive(Serialize, Deserialize)]
 pub struct PutValuesReq { pub base_rev: CaseRev, pub changes: Vec<ValueChange> }

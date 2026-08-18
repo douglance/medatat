@@ -11,6 +11,7 @@
 
 pub mod time_input;
 
+use crate::mode::RenderMode;
 use gpui::{
     AnyElement, AnyView, App, AppContext as _, Context, Entity, FocusHandle, Focusable as _,
     InteractiveElement as _, IntoElement, ParentElement as _, Render, SharedString,
@@ -23,7 +24,6 @@ use gpui_component::radio::{Radio, RadioGroup};
 use gpui_component::searchable_list::SearchableListItem;
 use gpui_component::select::{Select, SelectEvent, SelectState};
 use gpui_component::{ActiveTheme as _, IndexPath, Root, v_flex};
-use crate::mode::RenderMode;
 use medatat_core::{FieldIdx, WidgetKind, WidgetSpec, format_date, parse_date};
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -334,6 +334,12 @@ impl PaletteInput {
     }
 }
 
+/// The theme's focus/selection ring. Exposed so views above this module can draw selection
+/// chrome without reaching for `gpui-component`'s theme trait themselves.
+pub fn ring_color(cx: &App) -> gpui::Hsla {
+    cx.theme().ring
+}
+
 /// A bare query box, for the worklist filter. Same input type as the palette so the two
 /// search surfaces in the app cannot drift apart.
 pub fn render_filter(input: &PaletteInput) -> AnyElement {
@@ -470,9 +476,7 @@ pub fn render_field(
 
     match mode {
         RenderMode::Runtime => f.child(widget),
-        RenderMode::Design { .. } => {
-            f.child(design_chrome(widget, spec.idx, mode, on_select, cx))
-        }
+        RenderMode::Design { .. } => f.child(design_chrome(widget, spec.idx, mode, on_select, cx)),
     }
 }
 

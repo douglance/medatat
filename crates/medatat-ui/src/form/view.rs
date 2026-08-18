@@ -16,11 +16,14 @@
 
 use crate::form::palette::FieldPalette;
 use crate::mode::{RenderMode, Selection};
-use crate::widgets::{self, OnChoose, OnPick, OnSelectField, WidgetChange, WidgetState, time_input};
+use crate::widgets::{
+    self, OnChoose, OnPick, OnSelectField, WidgetChange, WidgetState, time_input,
+};
 use gpui::{
     AppContext as _, Context, Entity, FocusHandle, InteractiveElement as _, IntoElement,
     KeyDownEvent, ParentElement as _, Render, ScrollHandle, SharedString,
-    StatefulInteractiveElement as _, Styled as _, Subscription, Window, div, px,
+    StatefulInteractiveElement as _, Styled as _, Subscription, Window, div,
+    prelude::FluentBuilder as _, px,
 };
 use gpui_component::{h_flex, v_flex};
 use medatat_core::value::{parse_date, parse_decimal};
@@ -55,7 +58,13 @@ pub struct FormView {
     /// Called when a design-mode click selects a field, so the builder's inspector can
     /// follow along. `None` in runtime, where clicks focus instead of selecting.
     on_select: Option<OnSelectField>,
+    /// Called by the design-mode column control on a section header.
+    on_columns: Option<OnColumns>,
 }
+
+/// `(section index, new column count)`. The builder applies it through
+/// `FormDef::finalize`, which is where R12's `col_span` clamp already lives.
+pub type OnColumns = Rc<dyn Fn(usize, u8, &mut Window, &mut gpui::App)>;
 
 impl FormView {
     pub fn new(
@@ -106,6 +115,7 @@ impl FormView {
             scroll: ScrollHandle::new(),
             mode: RenderMode::Runtime,
             on_select: None,
+            on_columns: None,
         }
     }
 
@@ -115,19 +125,22 @@ impl FormView {
         cx.notify();
     }
 
-    pub fn mode(&self) -> RenderMode {
-        self.mode
-    }
-
     /// Installs the builder's selection callback.
     pub fn set_on_select(&mut self, on_select: OnSelectField) {
         self.on_select = Some(on_select);
     }
 
+    /// Installs the builder's column-change callback (R12). Design mode only.
+    pub fn set_on_columns(&mut self, on_columns: OnColumns) {
+        self.on_columns = Some(on_columns);
+    }
+
     /// Moves the design-mode selection without disturbing anything else.
     pub fn select(&mut self, selection: Option<Selection>, cx: &mut Context<Self>) {
         if self.mode.is_design() {
-            self.mode = RenderMode::Design { selected: selection };
+            self.mode = RenderMode::Design {
+                selected: selection,
+            };
             cx.notify();
         }
     }
@@ -641,15 +654,21 @@ impl Render for FormView {
         let def = Arc::clone(self.inst.def());
         let on_pick = self.on_pick(cx);
         let mode = self.mode;
+        let ring = widgets::ring_color(cx);
         let on_select = self
             .on_select
             .clone()
             .unwrap_or_else(|| Rc::new(|_, _, _| {}));
+        let on_columns: OnColumns = self
+            .on_columns
+            .clone()
+            .unwrap_or_else(|| Rc::new(|_, _, _, _| {}));
 
         let sections = def.sections.iter().enumerate().map(|(i, section)| {
             let cols = effective_columns(section.columns, width);
             let collapsed = self.collapsed.get(i).copied().unwrap_or(false);
 
+            let declared = section.columns;
             let header = h_flex()
                 .id(SharedString::from(format!("sec-{i}")))
                 .w_full()
@@ -657,14 +676,51 @@ impl Render for FormView {
                 .px_2()
                 .py_1()
                 .cursor_pointer()
-                .on_click(cx.listener(move |this, _, _, cx| this.toggle_section(i, cx)))
+                .rounded_sm()
+                .border_2()
+                .border_color(if mode.selects_section(i) {
+                    ring
+                } else {
+                    gpui::transparent_black()
+                })
+                // In design mode a header click selects the section for the inspector; in
+                // runtime it collapses. Same header, different hit-testing — the whole of
+                // what design mode is allowed to change.
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    if this.mode.is_design() {
+                        this.select(Some(Selection::Section(i)), cx);
+                    } else {
+                        this.toggle_section(i, cx);
+                    }
+                }))
                 .child(SharedString::from(section.title.clone()))
-                .child(SharedString::from(format!(
-                    "{} {} column{}",
-                    if collapsed { "▸" } else { "▾" },
-                    cols,
-                    if cols == 1 { "" } else { "s" }
-                )));
+                .child(if mode.is_design() {
+                    // The 1 / 2 / 3 segmented control (R12). Applying it goes through
+                    // `FormDef::finalize`, which clamps every child `col_span` — the UI
+                    // never does its own clamp, so it cannot disagree with the server.
+                    h_flex()
+                        .gap_1()
+                        .children((1u8..=3).map(|n| {
+                            let cb = on_columns.clone();
+                            div()
+                                .id(SharedString::from(format!("cols-{i}-{n}")))
+                                .px_1()
+                                .rounded_sm()
+                                .cursor_pointer()
+                                .when(n == declared, |d| d.font_weight(gpui::FontWeight::BOLD))
+                                .child(SharedString::from(n.to_string()))
+                                .on_click(move |_, window, cx| cb(i, n, window, cx))
+                        }))
+                        .into_any_element()
+                } else {
+                    SharedString::from(format!(
+                        "{} {} column{}",
+                        if collapsed { "▸" } else { "▾" },
+                        cols,
+                        if cols == 1 { "" } else { "s" }
+                    ))
+                    .into_any_element()
+                });
 
             let body = (!collapsed).then(|| {
                 let fields: Vec<_> = section

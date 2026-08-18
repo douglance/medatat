@@ -160,7 +160,11 @@ impl FormDef {
             section.fields.sort_by_key(|f| f.ordinal);
             for f in &mut section.fields {
                 // R12: a field can never span more columns than its section has.
-                f.col_span = f.col_span.clamp(1, section.columns);
+                // Calls `layout::clamp_col_span` rather than inlining the arithmetic, so
+                // there is exactly one definition of the rule. Two would eventually
+                // disagree, and the UI and the API would then clamp differently — which is
+                // the specific failure `docs/06-FORM-BUILDER.md` warns about.
+                f.col_span = crate::layout::clamp_col_span(f.col_span, section.columns);
                 f.idx = FieldIdx(n);
                 by_id.insert(f.field.field_id, FieldIdx(n));
                 n += 1;
@@ -328,6 +332,24 @@ mod tests {
             ),
         ] {
             assert_eq!(k.value_column(), c, "kind {}", k.tag());
+        }
+    }
+
+    #[test]
+    fn finalize_clamps_via_the_one_shared_rule() {
+        // finalize and layout::clamp_col_span must never drift apart. If they do, the
+        // builder previews one layout and the server stores another.
+        for columns in 1..=3u8 {
+            for span in 0..=5u8 {
+                let mut sec = section("s", columns, &[span]);
+                sec.fields[0].col_span = span;
+                let d = FormDef::new(FormId::new(), "f", vec![sec]);
+                assert_eq!(
+                    d.iter_fields().next().unwrap().col_span,
+                    crate::layout::clamp_col_span(span, columns),
+                    "columns={columns} span={span}"
+                );
+            }
         }
     }
 
