@@ -169,8 +169,11 @@ chmod +x "$APPDIR/AppRun"
 
 OUT="$ROOT/dist/medatat-${VERSION}-$(uname -m).AppImage"
 # appimagetool wants a FUSE mount unless told otherwise; CI runners rarely have one.
-if APPIMAGE_EXTRACT_AND_RUN=1 "$APPIMAGETOOL" "$APPDIR" "$OUT" >/dev/null 2>&1; then
+# Keep appimagetool's output. Discarding it reports "failed" and nothing else, which is
+# the same mistake that made the smoke job unreadable for two days.
+if APPIMAGE_EXTRACT_AND_RUN=1 "$APPIMAGETOOL" "$APPDIR" "$OUT" > "$TMP/appimage.log" 2>&1; then
   echo "built $OUT ($(du -h "$OUT" | cut -f1))"
 else
-  echo "appimage: appimagetool failed (the .deb is unaffected)" >&2
+  echo "appimage: appimagetool failed (the .deb is unaffected). Its output:" >&2
+  sed 's/^/  /' "$TMP/appimage.log" >&2
 fi
