@@ -108,12 +108,28 @@ wrong and reassuring.
 
 ### A local-emulator limit worth knowing
 
-`wrangler dev` keeps every Durable Object resident in **one Node process**. A 1,000-case
-push died at case 249 with V8 heap exhaustion at ~1.3 GB — 249 live DOs × 1,000 values in a
-single heap. This is a miniflare artifact and says nothing about production, where DOs are
-distributed and hibernate ([ADR-0001](adr/0001-durable-object-per-case.md)). Run local
-seeding with `NODE_OPTIONS=--max-old-space-size=12288` or larger. It caps what can be
-measured locally; it is not a scale signal.
+`wrangler dev` keeps every Durable Object resident in one process. A 1,000-case push died at
+**case 249** with V8 heap exhaustion at ~1.3 GB — 249 live DOs × 1,000 values in a single
+heap. A second attempt died **earlier, at case 138**.
+
+Two things make it worse than it first looks:
+
+- **`NODE_OPTIONS=--max-old-space-size` does not appear to help.** The heap that aborts is
+  inside **workerd**, a separate binary embedding its own V8, not the Node process wrangler
+  runs. (Inferred, not proven — the flag could not be observed reaching workerd.)
+- **Residual state compounds it.** `.wrangler/state` held 52 MB of the first run's objects,
+  and the second run loaded those *plus* its own, which is why it failed sooner. **Clear
+  `.wrangler/state` between seeding runs** or each retry starts further into the hole.
+
+Practical ceiling: roughly **150–250 live DOs per session**.
+
+This is a miniflare artifact and says nothing about production, where DOs are distributed
+and hibernate ([ADR-0001](adr/0001-durable-object-per-case.md)) — but it does cap what can
+be measured locally, and it means **a local cold-read number should be treated with
+suspicion**. An emulator that keeps everything resident may never truly evict, and a
+cold-read figure from it would read as evidence while measuring nothing. If Bench 4 cannot
+be answered honestly here, the finding is "this needs a real deployment", which is a better
+outcome than a plausible number with an asterisk nobody reads.
 
 ---
 
