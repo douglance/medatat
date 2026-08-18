@@ -6,7 +6,7 @@
 use crate::backoff::delay_for;
 use crate::transport::{Transport, TransportError};
 use medatat_core::ids::{CaseId, CaseRev, ConfigRev, FieldId};
-use medatat_core::wire::{CaseQuery, PutValuesReq, PutValuesResp, ValueChange};
+use medatat_core::wire::{CaseQuery, PutValuesReq, PutValuesResp, ValueChange, ValueRow};
 use medatat_store::{OutboxRow, Store, StoreError};
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -85,11 +85,24 @@ pub struct DrainReport {
     pub offline: bool,
 }
 
+/// Notified whenever inbound values are applied to the local store.
+///
+/// The engine writes straight to SQLite, so an open `FormView` has no way to learn what
+/// changed — and without that it cannot honour the rule that an inbound value must never
+/// overwrite the field the user is focused in (`docs/04-SYNC.md`). `FormInstance` has the
+/// guard; this is what gives it a caller.
+///
+/// The alternative — re-reading the case and diffing it against memory on every tick —
+/// would be a second implementation of "what changed", and the two would eventually
+/// disagree.
+pub type ChangeObserver = Arc<dyn Fn(CaseId, &[ValueRow]) + Send + Sync>;
+
 pub struct SyncEngine<T: Transport> {
     store: Arc<Store>,
     transport: T,
     status: Arc<SyncStatus>,
     batch_limit: usize,
+    observer: Option<ChangeObserver>,
 }
 
 impl<T: Transport> SyncEngine<T> {
@@ -99,6 +112,23 @@ impl<T: Transport> SyncEngine<T> {
             transport,
             status: Arc::new(SyncStatus::default()),
             batch_limit: 64,
+            observer: None,
+        }
+    }
+
+    /// Registers a callback fired after inbound values land, so an open view can apply the
+    /// focused-field guard. Without one the engine still works; the guard simply has no
+    /// caller, which is the state this method exists to end.
+    pub fn with_observer(mut self, observer: ChangeObserver) -> Self {
+        self.observer = Some(observer);
+        self
+    }
+
+    fn notify(&self, case_id: CaseId, rows: &[ValueRow]) {
+        if let Some(o) = &self.observer
+            && !rows.is_empty()
+        {
+            o(case_id, rows);
         }
     }
 
@@ -218,6 +248,7 @@ impl<T: Transport> SyncEngine<T> {
                 let n = conflicts.len();
                 // Record for the inline strip, take the server's value locally, and drop
                 // our outbox rows for those fields so the loop cannot spin forever.
+                self.notify(case_id, &conflicts);
                 self.store
                     .record_conflicts(case_id, &conflicts)
                     .and_then(|_| {
@@ -269,6 +300,9 @@ impl<T: Transport> SyncEngine<T> {
                 let vp = self.transport.get_values(summary.case_id, local).await?;
                 self.store
                     .apply_server_values(summary.case_id, &vp.values, vp.rev)?;
+                // Tell any open view what arrived, so it can defer anything landing on the
+                // field the user is focused in rather than rewriting text under the caret.
+                self.notify(summary.case_id, &vp.values);
                 stats.fetched += 1;
                 stats.values += vp.values.len();
             }

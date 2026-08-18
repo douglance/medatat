@@ -8,7 +8,7 @@
 use async_trait::async_trait;
 use medatat_core::def::{FieldDef, FieldKind, SectionDef, SectionField};
 use medatat_core::wire::{
-    CasePage, CaseQuery, CaseSummary, ConfigDelta, PutValuesReq, PutValuesResp, ValuePage,
+    CasePage, CaseQuery, CaseSummary, ConfigDelta, PutValuesReq, PutValuesResp, ValuePage, ValueRow,
 };
 use medatat_core::{
     CaseId, CaseRev, ConfigRev, FieldId, FieldIdx, FormDef, FormId, SectionId, Value,
@@ -412,6 +412,56 @@ async fn caseload_sync_pulls_assigned_cases() {
 
     let local = f.store.load_case_values(f.case_id).unwrap();
     assert!(local.iter().any(|(_, v)| v == &text("from server")));
+}
+
+#[tokio::test]
+async fn the_observer_reports_which_fields_arrived() {
+    // Without this the sync engine writes straight to SQLite and an open FormView has no
+    // way to learn what changed -- so the "never overwrite the focused field" guard in
+    // FormInstance has no caller and is unreachable. This is what gives it one.
+    use std::sync::Mutex;
+
+    let f = fixture();
+    let seen: Arc<Mutex<Vec<(CaseId, usize)>>> = Arc::new(Mutex::new(Vec::new()));
+    let sink = Arc::clone(&seen);
+
+    let engine = SyncEngine::new(Arc::clone(&f.store), Mock(Arc::clone(&f.mock))).with_observer(
+        Arc::new(move |case_id, rows: &[ValueRow]| {
+            sink.lock().unwrap().push((case_id, rows.len()));
+        }),
+    );
+
+    f.mock
+        .put_values(
+            f.case_id,
+            PutValuesReq {
+                base_rev: CaseRev::ZERO,
+                changes: vec![medatat_core::wire::ValueChange {
+                    field_id: f.fields[2],
+                    value: text("from server"),
+                }],
+            },
+        )
+        .unwrap();
+    f.mock.bump_case_rev(f.case_id);
+
+    engine.sync_caseload("me").await.unwrap();
+
+    let seen = seen.lock().unwrap();
+    assert_eq!(seen.len(), 1, "one case had inbound values");
+    assert_eq!(seen[0].0, f.case_id);
+    assert_eq!(seen[0].1, 1, "and one field arrived");
+}
+
+#[tokio::test]
+async fn the_observer_is_optional() {
+    // An engine without one must behave identically -- the observer is a hook, not a
+    // dependency.
+    let f = fixture();
+    f.store
+        .apply_local(f.case_id, &[(f.fields[0], text("v"))], CaseRev::ZERO)
+        .unwrap();
+    assert_eq!(f.engine.drain_once().await.unwrap().applied, 1);
 }
 
 #[tokio::test]

@@ -4,6 +4,7 @@ members = [
     "crates/medatat-core",
     "crates/medatat-store",
     "crates/medatat-sync",
+    "crates/medatat-http",
     "crates/medatat-worker",
     "crates/medatat-testkit",
     "crates/medatat-ui",
@@ -24,6 +25,7 @@ publish = false
 medatat-core    = { path = "crates/medatat-core" }
 medatat-store   = { path = "crates/medatat-store" }
 medatat-sync    = { path = "crates/medatat-sync" }
+medatat-http    = { path = "crates/medatat-http" }
 medatat-testkit = { path = "crates/medatat-testkit" }
 
 # Domain — must compile to wasm32-unknown-unknown (medatat-core is shared with the Worker)

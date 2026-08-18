@@ -1,0 +1,23 @@
+[package]
+name = "medatat-http"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+# The only Transport implementation. It lives here rather than in medatat-sync because
+# that crate's whole design point is having no network dependency — see the note on the
+# Transport trait. Both medatat-ui and medatat-cli can depend on this.
+[dependencies]
+medatat-core = { workspace = true }
+medatat-sync = { workspace = true }
+reqwest = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+async-trait = { workspace = true }
+tracing = { workspace = true }
+
+[features]
+default = []
+phi = ["medatat-core/phi", "medatat-sync/phi"]

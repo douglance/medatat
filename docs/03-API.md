@@ -79,6 +79,15 @@ nothing because it is IP- and email-scoped, not existence-scoped).
 The raw token is returned exactly once. Only `sha256(token)` is ever stored. `sha256` is
 correct here rather than a slow KDF because the token is already 256 bits of entropy.
 
+**That reasoning does not transfer to the login code, which is stored the same way.** A
+six-digit code has 10⁶ possibilities, so its hash is a lookup table, not a secret —
+recovering one from `sha256` takes well under a second. What actually protects a code is the
+**600 s TTL and the five-attempt budget**, not the hashing.
+
+This is not a production weakness: reading the stored hash requires KV access, and an
+attacker with that has already won. But do not read the hash as the protection, and do not
+extend the code's lifetime or attempt budget on the assumption that it is.
+
 ### `POST /auth/logout`
 
 → `204`. Deletes the session key.
