@@ -258,13 +258,33 @@ product feature.
   but was not taken: the sign convention could not be verified on a locked screen, and a
   wrong guess scrolls the wrong way undetectably. Revisit when someone can see the result.
 - **Always-visible high-contrast focus ring.** A keyboard user must never guess where they are.
-- **Any view that handles keys must take focus when it opens.** Found three times, in three
-  different views: the handler is correct, the binding is correct, and nothing happens
-  because no element in that view holds focus, so key events never enter its dispatch tree
-  at all. The user must click something first, and a keyboard-only abstractor never does.
-  It is invisible to review — every piece is right except the wiring above them — and it is
-  only catchable by dispatching a key. Assume any view without a `#[gpui::test]` that
-  presses a key into it has this bug.
+- **Any view that handles keys must take focus when it opens** — found three times, in three
+  different views — **and must take focus back when the element holding it stops being
+  rendered**, which is the fourth.
+
+  All four are the same failure: the handler is correct, the binding is correct, and nothing
+  happens because no element holds focus, so key events never enter the dispatch tree at all.
+  Invisible to review, because every individual piece is right and only the wiring above them
+  is wrong. Only catchable by dispatching a key.
+
+  The fourth is the nastiest. Collapsing the section you are standing in destroys the focused
+  element, focus does not fall back on its own, and **the keyboard dies with no visible
+  cause** — you cannot even expand the section again, and recovery needs the mouse. It is
+  reachable by mouse too: click a header to collapse the section you were typing in and the
+  same thing happens. So `toggle_section` returns focus to the form root whenever the focused
+  field leaves `focus_order`, and the view remembers the last section so collapse/expand
+  still targets correctly once focus is no longer in a field.
+
+  **Assume any view without a `#[gpui::test]` that presses a key into it has this bug**, and
+  assume any action that can unrender the focused element has the fourth variant.
+
+- **Capture beats a keymap binding, but not an OS one.** `InputState` binds `cmd-[`/`cmd-]`
+  to Outdent/Indent, and the collapse/expand handler still wins, because that is a *keymap*
+  binding inside the element tree — the same mechanism that lets the time field's `Up`/`Down`
+  nudge beat `MoveUp`/`MoveDown`. macOS consuming option+arrow is different in kind: the
+  event never enters the tree, so `capture_key_down` has nothing to intercept. When choosing
+  a binding, a collision with a widget's own keymap is survivable; a collision with the OS
+  is not.
 - **`Alt-Left` / `Alt-Right` are unusable on macOS and must not be bound.** macOS claims
   option+arrow for move-by-word and consumes it before element dispatch runs, so a handler
   never sees it when focus is inside a text input — which, after `Tab`, is where focus

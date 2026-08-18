@@ -158,6 +158,13 @@ impl Workspace {
         let worklist =
             cx.new(|cx| WorklistView::new(&s, DEMO_ASSIGNEE, WORKLIST_LIMIT, on_open, window, cx));
 
+        // Take focus on open, for the same reason `FormView` does: without it the shell's
+        // own element is never focused, so `Cmd-J`/`Cmd-K`/`Cmd-B` reach nothing until the
+        // user happens to click. A keyboard-driven app that ignores the keyboard until it
+        // is clicked is not keyboard-driven.
+        let focus = cx.focus_handle();
+        window.focus(&focus, cx);
+
         Workspace {
             store,
             worklist,
@@ -165,7 +172,7 @@ impl Workspace {
             builder: None,
             def,
             message,
-            focus: cx.focus_handle(),
+            focus,
         }
     }
 

@@ -98,8 +98,16 @@ Work top to bottom. Items 1–3 are external and have long lead times; start the
 - [ ] 8. Log audit: no field value reaches a log line, panic message, or tracing span at any
       level. Grep the codebase for value interpolation, and run the app at `RUST_LOG=trace`
       against a seeded case to confirm.
-- [ ] 9. Benches 1 and 2 re-run **with `--features phi`**. SQLCipher adds per-page encryption
-      cost; confirm the R13/R14 gates still hold rather than assuming they do.
+- [x] 9. Benches 1 and 2 re-run **with `--features phi`**, via Bench 5 against a 500-case
+      corpus. SQLCipher's per-page cost lands on reads: a single-case load goes 327 µs →
+      478 µs (+46%) and a first read after reopening 267 µs → 379 µs (+42%), leaving the
+      R13 gate ~6x clear at 749 µs mean. Scale behaviour is unchanged — 0.97x read and
+      0.97x write against the one-case control — and the plan is still a primary-key range
+      scan. The database is 2% larger (65.1 MB vs 63.5 MB).
+      **Writes are not comparable between the two builds**: the default links the platform
+      SQLite (3.54.0) and `phi` links SQLCipher's own (3.45.3), so the faster `phi` write
+      figure is a difference of engine and version, not evidence that encryption is free.
+      Re-confirm on Linux and Windows, which is what keeps this item open.
 
 ### Deployment
 

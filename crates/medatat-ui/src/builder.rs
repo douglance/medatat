@@ -262,6 +262,28 @@ impl BuilderView {
         }
     }
 
+    /// Sets the selection from a test, mirroring a click in the tree.
+    #[cfg(test)]
+    pub(crate) fn set_selection_for_test(
+        &mut self,
+        selection: Option<Selection>,
+        cx: &mut Context<Self>,
+    ) {
+        self.set_selection(selection, cx);
+    }
+
+    /// The current draft. Read by the builder GUI tests.
+    #[cfg(test)]
+    pub(crate) fn draft(&self) -> &Arc<FormDef> {
+        &self.draft
+    }
+
+    /// What the inspector is looking at. Read by the builder GUI tests.
+    #[cfg(test)]
+    pub(crate) fn selection(&self) -> Option<Selection> {
+        self.selection
+    }
+
     /// Selection is mirrored into the canvas so the outline and the inspector agree.
     fn set_selection(&mut self, selection: Option<Selection>, cx: &mut Context<Self>) {
         self.selection = selection;

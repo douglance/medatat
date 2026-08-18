@@ -193,9 +193,12 @@ open.
    `GET /cases/{id}/values?since_rev=<local synced_rev>`.
 4. Apply to local SQLite, skipping any row where `pending = 1`.
 
-Sizing: a realistic caseload of a few hundred cases × ~1000 values × ~60 bytes ≈
-**tens of MB**. The user only ever opens cases that are already local, so a cache miss is
-not part of normal operation.
+Sizing, **measured** rather than estimated (Bench 5, `crates/medatat-testkit/benches/`):
+500 cases × 1000 values is **63.5 MB on disk — 130 KB per case, 133 bytes per stored
+value**, including indexes and the WAL. So a caseload in the low hundreds is tens of MB and
+one of a few thousand is still under a gigabyte. SQLCipher costs ~2% on top (65.1 MB for the
+same corpus). The user only ever opens cases that are already local, so a cache miss is not
+part of normal operation.
 
 **Order matters.** Sync cases in worklist order, so the ones at the top of the user's screen
 land first. Report progress in an unobtrusive status line — never as a modal, never as a

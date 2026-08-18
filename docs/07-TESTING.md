@@ -22,6 +22,23 @@ each says so in its own module docs rather than asserting a number it cannot mea
 | **2** | Local write of 300 changed fields, one transaction | **< 10 ms** | **5.2 ms** ✅ | R14 | gate |
 | **3** | Open-case intent → first painted frame, 200 cases | **p99 < 50 ms** | — | R13, R15 | not yet |
 | **4** | Full sync of one case from a **cold, hibernated** DO; seeding throughput | recorded | — | R16 | placeholder |
+| **5** | Benches 1 and 2 re-run against a **500-case caseload** (500k rows) | **≤ 1.5× the one-case control** | **0.95× read, 1.15× write** ✅ | R13, R14, M7 | gate |
+
+Bench 5 answers the question Benches 1 and 2 cannot: whether their margin is real or an
+artefact of a table small enough to sit entirely in cache. It seeds 500 cases × 1000 fields
+(~500,000 rows, 63.5 MB) and re-measures. A single-case load is flat across the whole growth
+curve — 1 case 355 µs, 500 cases 237 µs, first-touch and never re-read — and the plan stays
+`SEARCH field_value USING PRIMARY KEY`. That is the `WITHOUT ROWID` clustering doing exactly
+what [ADR-0002](adr/0002-encrypted-local-sqlite.md) claims.
+
+It gates on a **ratio against a one-case control measured in the same process**, not on
+5 ms and 10 ms. Absolute wall-clock here moves up to 2× with host load alone — measured: on
+a loaded machine the one-case control saved in 9.1 ms against Bench 2's recorded 5.2 ms — so
+an absolute gate in this file would fail for reasons unrelated to the corpus, and the only
+way to make it pass would be to weaken it. Benches 1 and 2 keep the absolute gates, on the
+fixture where they mean something. Bench 5 also asserts the 200 ms requirement as a floor,
+and prints the host load average beside every result. Shrink it with
+`MEDATAT_BENCH_CASES` / `MEDATAT_BENCH_FIELDS`.
 
 Bench 3 measures only `core.build_instance` today, because two of its four spans live in
 `medatat-ui`, which is still being built. The 50 ms gate belongs to the assembled bench and

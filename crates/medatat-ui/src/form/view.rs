@@ -57,6 +57,9 @@ pub struct FormView {
     /// under someone's cursor is the fastest way to make a form feel hostile.
     deferred: Vec<(FieldId, Value)>,
     focused: Option<FieldIdx>,
+    /// The section the user was last in. Collapse/expand targets this, so it still works
+    /// after collapsing drops focus back to the form root.
+    last_section: usize,
     dirty_since_flush: bool,
     /// The `Cmd/Ctrl-F` field palette, present only while it is open. A separate entity so
     /// typing a query re-renders the palette rather than all 300 fields — see `palette.rs`.
@@ -127,6 +130,7 @@ impl FormView {
             focus,
             deferred: Vec::new(),
             focused: None,
+            last_section: 0,
             dirty_since_flush: false,
             palette: None,
             scroll: ScrollHandle::new(),
@@ -308,12 +312,25 @@ impl FormView {
         }
     }
 
-    pub fn toggle_section(&mut self, section: usize, cx: &mut Context<Self>) {
-        if let Some(c) = self.collapsed.get_mut(section) {
-            *c = !*c;
-            self.focus_order = focus_order(self.inst.def(), &self.collapsed);
-            cx.notify();
+    pub fn toggle_section(&mut self, section: usize, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(c) = self.collapsed.get_mut(section) else {
+            return;
+        };
+        *c = !*c;
+        self.focus_order = focus_order(self.inst.def(), &self.collapsed);
+
+        // Collapsing the section you are standing in destroys the element holding focus,
+        // and focus does not fall back on its own — key events then route nowhere and the
+        // keyboard goes dead, so you cannot even expand the section again. Take focus back
+        // to the form root, which is always rendered.
+        if self
+            .focused
+            .is_some_and(|idx| !self.focus_order.contains(&idx))
+        {
+            self.focused = None;
+            self.focus.focus(window, cx);
         }
+        cx.notify();
     }
 
     #[allow(
@@ -331,6 +348,12 @@ impl FormView {
             .get(idx.as_usize())
             .map(|w| w.text(cx))
             .unwrap_or_default()
+    }
+
+    /// Whether a section is collapsed. Read by the `Alt-Left`/`Alt-Right` test.
+    #[cfg(test)]
+    pub(crate) fn is_collapsed(&self, section: usize) -> bool {
+        self.collapsed.get(section).copied().unwrap_or(false)
     }
 
     /// Which field the view believes has focus. Read by `tab_order_matches_focus_order`.
@@ -393,12 +416,27 @@ impl FormView {
             return;
         }
 
+        // Collapse and expand (`docs/05-UI-SPEC.md`).
+        //
+        // `Cmd/Ctrl-[` and `]`, **not** `Alt-Left`/`Alt-Right`. macOS claims option+arrow as
+        // "move by word" and consumes it before the event enters the element dispatch tree,
+        // so no handler — capture phase included — can ever see it while a text input has
+        // focus. Since Tab lands you in a field, that made the binding unreachable exactly
+        // when a keyboard user would reach for it. Do not "fix" this back.
+        //
+        // `InputState` does bind `cmd-[`/`cmd-]` to Outdent/Indent, but that is a *keymap*
+        // binding, and capture runs before action dispatch — the same reason the time
+        // field's Up/Down nudge beats `MoveUp`/`MoveDown`.
+        if mods.secondary() && matches!(key, "[" | "]") {
+            self.set_collapsed(key == "[", window, cx);
+            cx.stop_propagation();
+            return;
+        }
+
         if mods.alt {
             match key {
                 "up" => self.step_section(-1, window, cx),
                 "down" => self.step_section(1, window, cx),
-                "left" => self.set_collapsed(true, cx),
-                "right" => self.set_collapsed(false, cx),
                 _ => return,
             }
             cx.stop_propagation();
@@ -472,13 +510,15 @@ impl FormView {
     /// Which section holds the focused field. Falls back to the first section so the
     /// section keys still do something before anything has been focused.
     fn current_section(&self) -> usize {
-        let Some(idx) = self.focused else { return 0 };
+        let Some(idx) = self.focused else {
+            return self.last_section;
+        };
         self.inst
             .def()
             .sections
             .iter()
             .position(|s| s.fields.iter().any(|f| f.idx == idx))
-            .unwrap_or(0)
+            .unwrap_or(self.last_section)
     }
 
     /// `Alt-Up` / `Alt-Down`: focus the first field of the previous or next section that
@@ -503,12 +543,12 @@ impl FormView {
     }
 
     /// `Alt-Left` / `Alt-Right` on the current section.
-    fn set_collapsed(&mut self, collapsed: bool, cx: &mut Context<Self>) {
+    fn set_collapsed(&mut self, collapsed: bool, window: &mut Window, cx: &mut Context<Self>) {
         let section = self.current_section();
         if self.collapsed.get(section).copied() == Some(collapsed) {
             return;
         }
-        self.toggle_section(section, cx);
+        self.toggle_section(section, window, cx);
     }
 
     /// Select type-ahead: the next option after the current one whose label starts with
@@ -580,7 +620,7 @@ impl FormView {
             .position(|s| s.fields.iter().any(|f| f.idx == idx));
         if let Some(s) = section {
             if self.collapsed.get(s).copied().unwrap_or(false) {
-                self.toggle_section(s, cx);
+                self.toggle_section(s, window, cx);
             }
             // No animation: in a data-entry tool a moving viewport reads as latency.
             self.scroll.scroll_to_item(s);
@@ -649,6 +689,13 @@ impl FormView {
         // Set after `focus`, so a synchronously delivered blur for the field we just left
         // cannot clear what we are setting.
         self.focused = Some(idx);
+        self.last_section = self
+            .inst
+            .def()
+            .sections
+            .iter()
+            .position(|s| s.fields.iter().any(|f| f.idx == idx))
+            .unwrap_or(self.last_section);
         cx.notify();
     }
 
@@ -731,11 +778,11 @@ impl Render for FormView {
                 // In design mode a header click selects the section for the inspector; in
                 // runtime it collapses. Same header, different hit-testing — the whole of
                 // what design mode is allowed to change.
-                .on_click(cx.listener(move |this, _, _, cx| {
+                .on_click(cx.listener(move |this, _, window, cx| {
                     if this.mode.is_design() {
                         this.select(Some(Selection::Section(i)), cx);
                     } else {
-                        this.toggle_section(i, cx);
+                        this.toggle_section(i, window, cx);
                     }
                 }))
                 .child(SharedString::from(section.title.clone()))
