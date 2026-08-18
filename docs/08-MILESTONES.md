@@ -20,7 +20,7 @@ tri-platform viability and the latency claim — are settled in the first two we
 | **M5** Form builder | 🟡 | Items 1–6, 8, 9 done. Item 7 needs two machines and live sync |
 | **M6** Worklist + keyboard | 🟡 | Built and unit-tested; the GUI suite now **runs green on all three platforms** — the keyboard tests were themselves macOS-shaped until 2026-08-18 and could only ever have passed there. Still **never driven by a human on Windows or Linux**, which is what the amber is for |
 | **M7** Scale run | 🟡 | Client side done (Bench 5, 500k rows). Server side measured; **concurrency shipped and measured not to help — 1.75× ceiling, server-bound.** R16 rests on per-case extrapolation, not a built corpus |
-| **M8** Packaging | 🟡 | **macOS `.app` built and verified launching against the deployed Worker** (`packaging/bundle-macos.sh`, 16 MB). Unsigned — needs an Apple Developer identity. Windows/Linux installers need those platforms |
+| **M8** Packaging | 🟡 | **All three artifacts now build on their own platforms in CI** and upload: macOS `.app`, Windows NSIS installer + portable zip, Linux `.deb` (lintian-clean) + AppImage. `cargo audit` is clean and gated. Unsigned on macOS and Windows — needs an Apple identity and an Authenticode certificate. Auto-update deliberately not built until signing exists. **Nobody has installed any of them** |
 
 **Two of the three original blockers are gone.** The Cloudflare deployment is live, and CI
 runs on every push with all twelve jobs green. What remains is genuinely not code: a human
@@ -283,19 +283,52 @@ would close the gap, and it needs a human at an unlocked screen.
 ## M8 — Packaging and hardening
 
 ### Exit criteria
-- [x] macOS `.app` **built** — `packaging/bundle-macos.sh`, 16 MB, verified launching and
-      syncing against the deployed Worker.
+- [x] macOS `.app` **built** — `packaging/bundle-macos.sh`, verified launching and syncing
+      against the deployed Worker. Now carries a real `.icns` (built with `sips` and
+      `iconutil`, both shipped with the OS); `plutil -lint` clean.
 - [ ] **Signed and notarized.** Needs an Apple Developer identity. The bundle script reports
       unsigned status explicitly rather than producing an unsigned bundle that looks signed;
       Gatekeeper will refuse it on any machine but the one that built it.
-- [ ] Windows MSI or NSIS installer.
-- [ ] Linux AppImage and `.deb`.
-- [ ] Auto-update on all three.
-- [ ] `cargo build --workspace --features phi` clean on all three platforms.
+- [x] Windows NSIS installer — `packaging/bundle-windows.ps1`, plus a portable `.zip`.
+      Per-user, so it needs no elevation. Built on `windows-latest` in the `package` job.
+      Unsigned: needs an Authenticode certificate, and SmartScreen will warn without one.
+- [x] Linux `.deb` **and** AppImage — `packaging/bundle-linux.sh`. The `.deb` passes
+      `lintian` with no errors and its `Depends` is derived from the ELF with
+      `dpkg-shlibdeps` rather than hand-written.
+- [ ] Auto-update on all three. **Not started, and deliberately not started before signing:**
+      an updater that downloads and executes an unverified binary is a worse problem than
+      the one it solves. See below.
+- [x] `cargo build --workspace --features phi` clean on all three platforms — checked on all
+      three rather than extrapolated from one, which is how the Windows failure surfaced
+      (`bundled-sqlcipher` needs an OpenSSL the runner does not have; now vendored).
 - [ ] The [PHI readiness checklist](12-PHI-READINESS.md) is reviewed and its code items
       (4–9) pass. Legal items (1–3) are not a blocker for shipping to synthetic-data users.
-- [ ] `cargo audit` clean.
+- [x] `cargo audit` clean, and enforced by CI. Three advisories are ignored **with a written
+      justification each** in `.cargo/audit.toml`; the gate is "no advisory nobody has looked
+      at", so anything new fails. One (`time`) was fixable and was fixed.
 - [ ] All docs in `docs/` reconciled against the shipped implementation.
+
+### Why auto-update is not built
+
+It is the last buildable item on this list and it is being left undone on purpose.
+
+Automatic update means downloading a binary and running it. Doing that safely requires
+verifying the payload came from us, which needs a signing key. This project has neither an
+Apple Developer identity nor an Authenticode certificate, so an updater written today would
+either verify nothing — handing anyone who can intercept the download a way to run code on a
+clinician's machine — or verify against a key invented for the purpose, which is worth doing
+but is a key-management design, not an afternoon's work.
+
+Shipping an unverified updater to meet a checklist item would be strictly worse than the
+current state, where updates are manual and the packages are at least what we built.
+
+### What packaging still cannot tell you
+
+The `package` job builds all three artifacts on their own platforms and uploads them, so
+they exist and are installable in principle. **Nobody has installed one.** CI does not run
+an installer, does not open a window, and cannot tell whether the app launches from a
+Start Menu shortcut or a Finder double-click. That gap is the reason this milestone is
+amber, and it closes with a person and a machine, not with more CI.
 
 ---
 
