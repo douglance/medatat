@@ -77,21 +77,23 @@ medatat \- medical data abstraction tool
 .B medatat
 .SH DESCRIPTION
 .B medatat
-is a data-entry application for abstracting medical records into data-driven forms
-whose fields and layout are configured through the interface rather than in code.
+is a data-entry application for abstracting medical records into
+data-driven forms whose fields and layout are configured through the
+interface rather than in code.
 .PP
-Edits are written to an encrypted local store first and synchronised in the background,
-so the interface never waits for the network and never shows a loading spinner. Work
-continues unchanged while offline; queued edits are sent when connectivity returns.
+Edits are written to an encrypted local store first and synchronised in
+the background, so the interface never waits for the network and never
+shows a loading spinner. Work continues unchanged while offline; queued
+edits are sent when connectivity returns.
 .SH FILES
 .TP
-.I $XDG_DATA_HOME/medatat/
+.I \$XDG_DATA_HOME/medatat/
 Local store and its key file, falling back to
 .I ~/.local/share/medatat/
 when
 .B XDG_DATA_HOME
-is unset. Contains unsynced edits: do not delete it to troubleshoot, as queued work
-has not reached the server and is not recoverable from it.
+is unset. Contains unsynced edits: do not delete it to troubleshoot, as
+queued work has not reached the server and is not recoverable from it.
 .SH EXIT STATUS
 .TP
 .B 0
