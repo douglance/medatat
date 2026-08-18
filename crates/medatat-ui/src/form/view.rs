@@ -35,6 +35,16 @@ use medatat_store::Store;
 use std::rc::Rc;
 use std::sync::Arc;
 
+/// Test-only counters for the anti-quadratic guard. They do not exist in a release build;
+/// `subscriptions_fire_once_per_edit` reads them to prove a keystroke costs one subscription
+/// and **zero** parent re-renders.
+#[cfg(test)]
+pub(crate) static CHANGE_EVENTS: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+#[cfg(test)]
+pub(crate) static PARENT_RENDERS: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+
 pub struct FormView {
     inst: FormInstance,
     widgets: Vec<WidgetState>,
@@ -100,6 +110,13 @@ impl FormView {
         }
 
         let focus_order = focus_order(&def, &collapsed);
+
+        // Take focus on open. Without this the root element is never focused, so key events
+        // never route through it and Tab does nothing until the user clicks something —
+        // which for a keyboard-only abstractor means the form appears dead on arrival.
+        let focus = cx.focus_handle();
+        window.focus(&focus, cx);
+
         FormView {
             inst,
             widgets,
@@ -107,7 +124,7 @@ impl FormView {
             focus_order,
             collapsed,
             store,
-            focus: cx.focus_handle(),
+            focus,
             deferred: Vec::new(),
             focused: None,
             dirty_since_flush: false,
@@ -158,6 +175,9 @@ impl FormView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        #[cfg(test)]
+        CHANGE_EVENTS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+
         match change {
             WidgetChange::Text(raw) => {
                 self.on_edit(idx, kind, raw);
@@ -302,6 +322,31 @@ impl FormView {
     )]
     pub fn focus_order(&self) -> &[FieldIdx] {
         &self.focus_order
+    }
+
+    /// The text currently in one widget. Used by `closing_case_clears_inputs`.
+    #[cfg(test)]
+    pub(crate) fn widget_text(&self, idx: FieldIdx, cx: &gpui::App) -> String {
+        self.widgets
+            .get(idx.as_usize())
+            .map(|w| w.text(cx))
+            .unwrap_or_default()
+    }
+
+    /// Which field the view believes has focus. Read by `tab_order_matches_focus_order`.
+    #[cfg(test)]
+    pub(crate) fn focused_field(&self) -> Option<FieldIdx> {
+        self.focused
+    }
+
+    /// Blanks every editable widget. PHI hygiene: a closed case must leave no field
+    /// contents behind in a live input buffer, which `Value`'s zeroize cannot reach because
+    /// the text also lives inside `gpui-component`'s own editing state.
+    pub fn clear_inputs(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        for w in &self.widgets {
+            w.clear(window, cx);
+        }
+        cx.notify();
     }
 
     /// The keyboard model (`docs/05-UI-SPEC.md#keyboard-model`).

@@ -217,7 +217,34 @@ limit, and single-use; `col_span > columns` rejected with 422; `kind` patch reje
 The thin `workers-rs` binding layer is covered by integration tests driving `wrangler dev`
 through `medatat-cli` — real DO SQLite, real D1, real KV.
 
-### `medatat-ui` — exactly three `#[gpui::test]`
+### `medatat-ui` — as many `#[gpui::test]` as there is *wiring* to prove
+
+**The budget was three. It is now bounded by kind, not by count**, because the original
+number was a proxy for the wrong thing.
+
+The rule it was protecting is still right: **push logic below the GUI line.** Anything that
+can be decided by a pure function belongs in `medatat_core::view` or `medatat_core::builder`
+and gets snapshot- or unit-tested with no window. That is unchanged, and most of R5–R12 is
+covered exactly that way.
+
+But **wiring is not logic, and cannot be pushed below the line.** Focus, key routing, event
+dispatch, and who actually receives a keystroke are properties of the element tree, and no
+pure function can observe them. Two findings settled this:
+
+- `#[gpui::test]` / `TestAppContext` runs **fully headlessly** — no window, no display —
+  and `simulate_input` / `simulate_keystrokes` dispatch real key events through the real
+  dispatch tree. The cost the budget was rationing does not exist.
+- Dispatching two keystrokes found a bug that had survived four review passes: **Tab did
+  nothing on a freshly-opened case**, because nothing held focus, so events never reached
+  the root element and the capture handler never ran. Every handler was correct; the wiring
+  above them had never been exercised. A keyboard-only abstractor would have found the form
+  dead on arrival.
+
+So: **write a `#[gpui::test]` for any behaviour that only exists once elements are wired
+together, and for nothing that a pure function could have decided.** If a test would pass
+identically against a `WidgetSpec`, it belongs below the line.
+
+#### The three that must always exist
 
 1. **`subscriptions_fire_once_per_edit`** — 300 subscriptions, one edit, counter == 1. The
    anti-quadratic guard. Must fail CI when broken.

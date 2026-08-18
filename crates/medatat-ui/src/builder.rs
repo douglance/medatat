@@ -1808,7 +1808,7 @@ impl Render for BuilderView {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use medatat_core::def::{FieldDef, FieldKind, FieldOption, SectionDef, SectionField};
+    use medatat_core::def::{FieldDef, FieldKind, SectionDef, SectionField};
     use medatat_core::{FieldId, FormId, SectionId};
 
     fn field(key: &str, col_span: u8) -> SectionField {

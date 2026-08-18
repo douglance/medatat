@@ -210,6 +210,15 @@ impl WidgetState {
         }
     }
 
+    /// Blanks this widget's editable contents. Radio and select hold no text of their own.
+    pub fn clear(&self, window: &mut Window, cx: &mut App) {
+        match self {
+            WidgetState::Input(e) => e.update(cx, |s, cx| s.set_value("", window, cx)),
+            WidgetState::Textarea(e) => e.update(cx, |s, cx| s.set_value("", window, cx)),
+            WidgetState::Date(_) | WidgetState::Select(_) | WidgetState::Radio(_) => {}
+        }
+    }
+
     /// Where focus goes when the form sends it here. Every kind has one, so `focus_order`
     /// (R12-adjacent, but the reason a keyboard-only abstractor can work at all) never has
     /// a hole in it.
@@ -494,10 +503,7 @@ pub fn render_field(
     // R9/R10: a stored code whose option has since been removed must still be *visible*.
     // Rendering nothing would hide real data behind a config change — worse than the
     // removal itself, because the value is still there and still exported.
-    let orphan_code = matches!(spec.kind, WidgetKind::Radio | WidgetKind::Select)
-        .then(|| spec.value.as_str())
-        .filter(|v| !v.is_empty() && index_of_code(spec, Some(v)).is_none())
-        .map(|v| v.to_string());
+    let orphan_code = is_orphan_code(spec).then(|| spec.value.clone());
 
     let widget = match (spec.kind, state) {
         (WidgetKind::Numeric, WidgetState::Input(e)) => NumberInput::new(e).into_any_element(),
@@ -515,10 +521,43 @@ pub fn render_field(
         (_, WidgetState::Radio(h)) => render_radio(spec, selected, on_pick, h, cx),
     };
 
+    let widget = match orphan_code {
+        None => widget,
+        Some(code) => v_flex()
+            .gap_1()
+            .child(widget)
+            .child(unknown_option(&code, cx))
+            .into_any_element(),
+    };
+
     match mode {
         RenderMode::Runtime => f.child(widget),
         RenderMode::Design { .. } => f.child(design_chrome(widget, spec.idx, mode, on_select, cx)),
     }
+}
+
+/// A stored option code with no matching option, in a warning style.
+///
+/// Never silently omitted: the value is still in `field_value` and still exported, so
+/// showing nothing would hide real data behind a config change.
+fn unknown_option(code: &str, cx: &App) -> AnyElement {
+    div()
+        .px_1()
+        .rounded_sm()
+        .text_color(cx.theme().warning_foreground)
+        .child(SharedString::from(format!("{code} (unknown option)")))
+        .into_any_element()
+}
+
+/// Whether a spec's stored value is a code with no matching option.
+///
+/// Extracted so the rule is testable without a window — the display half of "removing an
+/// option must not delete values" is as load-bearing as the non-deletion half, and it fails
+/// silently, so it needs a test rather than a reading.
+pub fn is_orphan_code(spec: &WidgetSpec) -> bool {
+    matches!(spec.kind, WidgetKind::Radio | WidgetKind::Select)
+        && !spec.value.is_empty()
+        && index_of_code(spec, Some(spec.value.as_str())).is_none()
 }
 
 /// Design-mode chrome around an otherwise identical widget.
@@ -637,4 +676,46 @@ pub fn form_grid(columns: u8, fields: Vec<Field>) -> impl IntoElement {
         .columns(columns.clamp(1, 3) as usize)
         .label_width(px(160.))
         .children(fields)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use medatat_core::FieldIdx;
+
+    fn spec(kind: WidgetKind, value: &str, options: &[(&str, &str)]) -> WidgetSpec {
+        WidgetSpec {
+            idx: FieldIdx(0),
+            kind,
+            label: "L".into(),
+            value: value.into(),
+            error: None,
+            required: false,
+            col_span: 1,
+            max_len: None,
+            rows: 1,
+            options: options
+                .iter()
+                .map(|(c, l)| ((*c).to_string(), (*l).to_string()))
+                .collect(),
+            searchable: false,
+        }
+    }
+
+    #[test]
+    fn r9_r10_a_stored_code_with_no_option_is_flagged_for_display() {
+        // The display half of "removing an option must not delete values". It fails
+        // silently when wrong — the value stays in `field_value` and is still exported,
+        // but renders as nothing — so it needs a test rather than a reading.
+        let opts = [("m", "Male"), ("f", "Female")];
+        assert!(is_orphan_code(&spec(WidgetKind::Select, "x", &opts)));
+        assert!(is_orphan_code(&spec(WidgetKind::Radio, "x", &opts)));
+
+        // A code that still matches an option is not an orphan.
+        assert!(!is_orphan_code(&spec(WidgetKind::Select, "m", &opts)));
+        // Neither is an empty value: nothing was ever stored.
+        assert!(!is_orphan_code(&spec(WidgetKind::Radio, "", &opts)));
+        // And kinds without options can never produce one.
+        assert!(!is_orphan_code(&spec(WidgetKind::Text, "x", &[])));
+    }
 }

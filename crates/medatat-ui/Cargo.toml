@@ -34,6 +34,10 @@ libc      = { version = "0.2", optional = true }
 
 [dev-dependencies]
 medatat-testkit = { workspace = true }
+# `test-support` provides `#[gpui::test]` and `TestAppContext`, which drive an app context
+# headlessly — no window is opened and no display is required. That is what makes the three
+# budgeted GUI tests runnable in CI and on a locked machine.
+gpui = { workspace = true, features = ["test-support"] }
 
 [features]
 default = ["demo"]

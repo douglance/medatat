@@ -7,6 +7,8 @@
 
 mod builder;
 mod form;
+#[cfg(test)]
+mod gui_tests;
 mod mode;
 mod widgets;
 mod worklist;
@@ -227,6 +229,13 @@ impl Workspace {
     /// Back to the worklist, flushing on the way out.
     fn close_case(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.flush_open_case(cx);
+        // PHI hygiene: `Value` zeroizes on drop, but the same text also lives in
+        // `gpui-component`'s editing state, which zeroize cannot reach. Blank the widgets
+        // before dropping the view or the contents outlive the case in a live buffer.
+        #[cfg(feature = "phi")]
+        if let Some(f) = &self.form {
+            f.update(cx, |v, cx| v.clear_inputs(window, cx));
+        }
         self.form = None;
         self.worklist.update(cx, |w, cx| w.focus(window, cx));
         cx.notify();
