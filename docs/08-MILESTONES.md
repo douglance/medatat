@@ -56,7 +56,10 @@ rework:
       grew), so any figure from it — and any extrapolation off it — is an artifact. Needs
       one run against a deployed Worker. See
       [07-TESTING.md](07-TESTING.md#throughput-is-not-credibly-measurable-on-the-local-emulator).
-- [ ] **Bench 4 needs a deployment, not a bigger local corpus.** "Cold" is a property of
+- [~] **Bench 4 measured locally: ~55 ms transport floor, DO wake unmeasured.** Cold and
+      warm reads differ by 3 ms of median, and cold's minimum is below warm's — so the
+      number is transport, not wake. Useful as a floor; not the answer.
+- [ ] **Bench 4's real number needs a deployment, not a bigger local corpus.** "Cold" is a property of
       time and eviction, not corpus size — but the local emulator **never evicts at all**,
       which its own OOM proves (memory grew monotonically with objects touched). The only
       cold obtainable locally is a fresh `workerd` process re-opening SQLite, which is a

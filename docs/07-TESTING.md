@@ -156,6 +156,32 @@ already on disk: at 1,000 fields per case it aborted at **249 cases on empty sta
 **138 on a 52 MB store**. Quoting it as "about 200 cases" would mislead anyone trying it
 with a different form size.
 
+### Bench 4, measured locally 2026-08-18 — and what it does not say
+
+30 full-size cases (1,000 values each), read in full over HTTP:
+
+| | n | min | median | p95 | max |
+|---|---|---|---|---|---|
+| warm (same process that wrote them) | 30 | 50 ms | **55 ms** | 60 ms | 66 ms |
+| cold (fresh `workerd`; every DO re-opened from disk) | 30 | 48 ms | **58 ms** | 80 ms | 117 ms |
+
+**Cold ≈ warm — 3 ms of median difference, and cold's minimum is *below* warm's.** That is
+not evidence of a cheap wake; it means the measurement is **not dominated by DO wake at
+all**. ~55 ms is what it costs to serialise 1,000 values and move them over HTTP on this
+machine, and re-opening SQLite disappears into that.
+
+So the honest reading: **a floor for the transport, not a measurement of what Bench 4 exists
+to ask.** Cloudflare's wake path — re-instantiating an isolate in a colo, loading durable
+storage possibly across the network — is not exercised by these numbers at all, because the
+emulator never evicts (below). Treat the tail (p95 80 ms, max 117 ms) as laptop noise, not
+as a wake distribution.
+
+**What it does establish, usefully:** whatever a wake costs in production, the floor beneath
+it is ~55 ms of serialisation and transport for a 1,000-value case. If R13's budget ever
+comes near that on the sync path, transport is the problem before hibernation is.
+
+**Bench 4's real number needs a deployment.**
+
 ### The OOM proves the emulator never evicts — so "cold" cannot be made here
 
 The crash is not just an obstacle; it is the evidence. **Memory grew monotonically with the
