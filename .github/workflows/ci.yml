@@ -314,6 +314,71 @@ jobs:
         # traced and justified in .cargo/audit.toml; anything new fails here.
         run: cargo audit
 
+  package:
+    # M8. The packaging scripts are RUN, not reviewed: a bundle script that has never
+    # executed on the platform it targets is a plan, not a deliverable. Each artifact is
+    # uploaded so it can be installed on a real machine -- which is the part CI still
+    # cannot do, and the reason M8 stays amber.
+    name: package (installable artifacts)
+    needs: preflight
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/linux-deps
+        if: runner.os == 'Linux'
+      - run: rustup show
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+
+      - name: Build the release binary
+        run: cargo build --release -p medatat-ui
+
+      - name: Packaging tools (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          # dpkg-dev provides dpkg-shlibdeps, which the script requires rather than
+          # falling back to a hand-written Depends line.
+          sudo apt-get install -y --no-install-recommends dpkg-dev lintian
+          # appimagetool is a download, not a package. Optional: the script skips the
+          # AppImage if this fails, and the .deb is the supported artifact.
+          curl -sSfL -o /tmp/appimagetool \
+            https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage \
+            && chmod +x /tmp/appimagetool || echo "appimagetool download failed; skipping"
+
+      - name: Bundle (Linux)
+        if: runner.os == 'Linux'
+        env:
+          APPIMAGETOOL: /tmp/appimagetool
+        run: ./packaging/bundle-linux.sh
+
+      - name: Bundle (macOS)
+        if: runner.os == 'macOS'
+        run: ./packaging/bundle-macos.sh
+
+      - name: Bundle (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./packaging/bundle-windows.ps1
+
+      - name: Upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: medatat-${{ matrix.os }}
+          # dist/deb and dist/medatat.AppDir are staging trees, not artifacts.
+          path: |
+            dist/*.deb
+            dist/*.AppImage
+            dist/*.zip
+            dist/*setup.exe
+            dist/medatat.app
+          if-no-files-found: error
+
   smoke:
     name: smoke (end-to-end against wrangler dev)
     needs: preflight
