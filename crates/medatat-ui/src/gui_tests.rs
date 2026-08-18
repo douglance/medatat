@@ -660,9 +660,17 @@ fn sync_loop_pre_syncs_the_caseload_in_the_background() {
 
     let _handle = crate::sync::spawn(engine, "demo".into(), medatat_http::TokenHolder::default())
         .expect("sync thread");
-    // The loop runs on its own OS thread with its own Tokio runtime, so this waits on real
-    // time rather than the test clock — see the note on `SyncHandle`.
-    wait_for(|| !mock.calls().is_empty());
+    // Wait for the condition actually being asserted, not a weaker proxy for it.
+    //
+    // This waited for `!calls.is_empty()` — the FIRST call — and then asserted that TWO
+    // specific calls had happened. On a fast machine the second usually lands in the same
+    // instant; on a slower CI runner it does not, and the test fails for a reason that has
+    // nothing to do with the behaviour. It passed on macOS and Windows and failed on Linux
+    // for exactly that reason.
+    let seen_both = |c: &[String]| {
+        c.iter().any(|x| x.starts_with("list_cases")) && c.iter().any(|x| x.starts_with("config"))
+    };
+    wait_for(|| seen_both(&mock.calls()));
 
     let calls = mock.calls();
     assert!(
@@ -897,8 +905,14 @@ fn r8_tabbing_out_of_a_time_field_canonicalises_it(cx: &mut TestAppContext) {
 
 /// Polls a condition for up to two seconds. The sync loop runs on a real thread, so its
 /// tests wait on wall-clock rather than gpui's test executor.
+/// Polls until `done`, for up to 10 s.
+///
+/// The budget is generous on purpose: this waits on a real background thread with its own
+/// runtime, and a shared CI runner is far slower than a developer machine. A tight timeout
+/// here does not catch bugs, it manufactures flakes — and a flaky test teaches people to
+/// re-run rather than to read.
 fn wait_for(mut done: impl FnMut() -> bool) -> bool {
-    for _ in 0..200 {
+    for _ in 0..1000 {
         if done() {
             return true;
         }

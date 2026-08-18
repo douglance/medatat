@@ -329,11 +329,44 @@ jobs:
             "INSERT OR REPLACE INTO app_user (user_id,email,display_name,role,is_active,created_at) \
              VALUES ('smoke-user','smoke@cetify.email','Smoke','admin',1,'2026-01-01T00:00:00Z')"
 
+      # Build the Worker bundle BEFORE anything is timing it.
+      #
+      # `wrangler dev` runs the custom build from wrangler.jsonc, which begins with
+      # `cargo install -q worker-build`. On a cold runner that compiles worker-build from
+      # source, then builds the wasm, then downloads wasm-opt -- and all of it happened
+      # inside the health-check window, which is why this job failed with "did not serve
+      # /health within 240s" while the `wasm` job, which caches the binary and builds
+      # before it times anything, passed on the same commit.
+      #
+      # Doing the work here makes wrangler's own build a warm no-op, so the wait below
+      # measures the Worker starting rather than the toolchain installing.
+      - name: Cache worker-build
+        id: worker-build-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/bin/worker-build
+          key: worker-build-${{ runner.os }}-v0.8.5
+
+      - name: Install worker-build
+        if: steps.worker-build-cache.outputs.cache-hit != 'true'
+        run: cargo install --locked worker-build
+
+      - name: Pre-build the Worker bundle
+        run: worker-build --profile release-wasm crates/medatat-worker
+
       - name: Start the Worker
         run: |
           nohup wrangler dev --local --port 8787 > /tmp/wrangler.log 2>&1 &
+          pid=$!
           for _ in $(seq 1 120); do
             curl -sf -m 2 http://localhost:8787/health >/dev/null 2>&1 && exit 0
+            # A dead wrangler will never serve anything. Waiting out the full window
+            # buries the actual error under four minutes of nothing.
+            kill -0 "$pid" 2>/dev/null || {
+              echo "::error::wrangler dev exited before serving /health"
+              tail -50 /tmp/wrangler.log
+              exit 1
+            }
             sleep 2
           done
           echo "::error::wrangler dev did not serve /health within 240s"
