@@ -233,8 +233,35 @@ recorded: the local emulator has no real network, and at ~74 requests per case t
 trip dominates completely.
 
 **Extrapolated: 100,000 cases ≈ 229 hours serial** — 9.5 days, against the 14.6 h the local
-number implied. Serial seeding of the full corpus is infeasible. Client-side concurrency in
-`medatat-cli` is not an optimisation here, it is a prerequisite; at 20-way it is ~11 hours.
+number implied.
+
+### Concurrency does not fix it, and that is the interesting part
+
+`medatat push --concurrency N`, same 40 cases × 1,000 values, against production:
+
+| concurrency | elapsed | vs serial |
+|---|---|---|
+| 1 | 330.7 s | — |
+| 8 | 200.4 s | **1.65×** |
+| 24 | 189.2 s | **1.75×** |
+
+**Tripling the concurrency bought 6%.** The throughput ceiling is therefore **server-side,
+not client-side** — the round trip was never the binding constraint, and the "just add
+concurrency" remedy this document previously assumed does not exist.
+
+The likely cause is the one piece of shared, serialized state on the write path: every case
+is an independent Durable Object, but each write also updates that case's row in the single
+**D1 `case_index`**, and D1 serialises writes. 800 batches per run all funnel through it.
+That is worth confirming before anyone optimises it — the number above says *where* to look,
+not *what* to change.
+
+**Consequence for R16 and M7:** the 100,000-case corpus **cannot be built through the normal
+write path** at any client concurrency — 131 hours at best. That is not a reason to weaken
+the corpus; it is a finding about the write path. The options are to debounce the
+`case_index` update (a Worker change, and the one the measurement points at), or to accept
+that R16 is verified by per-case measurement and extrapolation rather than by building the
+corpus. `docs/02-DATA-MODEL.md`'s per-case sizing is already that shape of argument, and
+`POST /bulk/cases` exists precisely to create index rows cheaply without values.
 
 ### Bench 4, measured locally — and what it does not say
 

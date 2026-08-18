@@ -147,6 +147,20 @@ or Linux could plausibly produce a different set of passes, and neither has been
 **Do not read green here as green everywhere.** The suite costs ~1.1 s, so running it on the
 other two platforms is cheap the moment they build at all.
 
+### 11. The 100k-case corpus cannot be built through the write path
+
+Measured in production: 0.12 cases/s serial, and **concurrency plateaus at 1.75× — tripling
+it from 8 to 24 bought 6%.** The ceiling is server-side. 100,000 cases is 131 hours at best.
+
+The likely constraint is the single D1 `case_index`, which every write updates and which
+serialises writes, while the cases themselves are independent Durable Objects. That is a
+hypothesis the measurement points at, not a confirmed cause.
+
+So **R16 is verified by per-case measurement and extrapolation, not by a built corpus** —
+130 KB per case against a 10 GB per-object budget, which is the same shape of argument
+`docs/02-DATA-MODEL.md` already makes. Anyone who needs the real corpus should first
+establish whether `case_index` is the bottleneck and whether its update can be debounced.
+
 ## Risks
 
 Ordered by expected cost × probability.

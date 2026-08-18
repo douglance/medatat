@@ -369,6 +369,10 @@ pub async fn run(args: &[String]) -> Result<()> {
     let mut batch = DEFAULT_BATCH;
     let mut seed = medatat_testkit::DEFAULT_SEED;
     let mut start = 0usize;
+    // 8 is deliberately modest. Cases are independent Durable Objects so they parallelise
+    // cleanly, but each is ~74 requests and the point is to fill the latency gap, not to
+    // find the server's breaking point.
+    let mut concurrency = 8usize;
     let mut reuse_form: Option<String> = None;
     let mut api_base =
         std::env::var("MEDATAT_API").unwrap_or_else(|_| "http://localhost:8787".to_string());
@@ -379,6 +383,9 @@ pub async fn run(args: &[String]) -> Result<()> {
             "--cases" => cases = next_num(&mut it, "--cases")? as usize,
             "--fields" => fields = next_num(&mut it, "--fields")? as usize,
             "--batch" => batch = next_num(&mut it, "--batch")? as usize,
+            "--concurrency" => {
+                concurrency = (next_num(&mut it, "--concurrency")? as usize).clamp(1, 64)
+            }
             "--seed" => seed = next_num(&mut it, "--seed")?,
             // Resume. The local Worker emulator dies of V8 heap exhaustion after a few
             // hundred live Durable Objects, so a long run has to be driven in chunks with
@@ -434,22 +441,59 @@ pub async fn run(args: &[String]) -> Result<()> {
     let mut values_written = 0usize;
     let mut batches_written = 0usize;
 
-    for i in start..cases {
-        // Same derivation `seed_corpus` uses, so a disk corpus and a pushed corpus are the
-        // same data and Bench 4 can be run against either.
-        let case_seed = seed ^ (i as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15);
-        let values = medatat_testkit::synthetic_case(&form, case_seed);
-        let mrn = medatat_testkit::synthetic_mrn(case_seed);
+    // Cases in flight at once.
+    //
+    // Serial pushing is dominated by round-trip latency, not by the server: a case is ~74
+    // requests, so against a deployed Worker it measured 0.12 cases/s and 100k cases
+    // extrapolated to 229 hours. That is not an optimisation problem, it is the difference
+    // between a corpus being buildable and not.
+    //
+    // Concurrency lives here rather than in a bulk server endpoint on purpose. A bulk write
+    // would stamp every row of a case with one rev, and per-field conflict detection and
+    // `since_rev` delta reads both key off that spread — a corpus where every row is rev 1
+    // makes delta sync unbenchmarkable *and* flatters the numbers.
+    //
+    // Cases are independent (one Durable Object each), so they parallelise cleanly; the
+    // batches *within* a case stay strictly ordered, because that ordering is what produces
+    // the rev spread.
+    let mut in_flight = futures::stream::FuturesUnordered::new();
+    let mut next = start;
+    let mut done = 0usize;
 
-        let (written, batches) = push_case(&api, &published, &mrn, values, batch)
-            .await
-            .with_context(|| format!("case {i} of {cases}"))?;
+    loop {
+        while in_flight.len() < concurrency && next < cases {
+            let i = next;
+            next += 1;
+            // Same derivation `seed_corpus` uses, so a disk corpus and a pushed corpus are
+            // the same data and Bench 4 can be run against either. Deriving from the index
+            // rather than a running counter is what keeps a concurrent run identical to a
+            // serial one.
+            let case_seed = seed ^ (i as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15);
+            let values = medatat_testkit::synthetic_case(&form, case_seed);
+            let mrn = medatat_testkit::synthetic_mrn(case_seed);
+            let api = &api;
+            let published = &published;
+            in_flight.push(async move {
+                push_case(api, published, &mrn, values, batch)
+                    .await
+                    .with_context(|| format!("case {i} of {cases}"))
+            });
+        }
+        if in_flight.is_empty() {
+            break;
+        }
+
+        use futures::StreamExt as _;
+        let (written, batches) = in_flight.next().await.expect("in_flight is non-empty")?;
         values_written += written;
         batches_written += batches;
+        done += 1;
 
-        if cases >= 20 && i > start && (i - start) % (cases / 20).max(1) == 0 {
+        let total = cases - start;
+        if total >= 20 && done % (total / 20).max(1) == 0 {
             eprintln!(
-                "  {i}/{cases} cases ({:.0}s)",
+                "  {}/{cases} cases ({:.0}s)",
+                start + done,
                 started.elapsed().as_secs_f64()
             );
         }
@@ -467,7 +511,7 @@ pub async fn run(args: &[String]) -> Result<()> {
 }
 
 const HELP: &str = "\
-medatat push --cases <n> --fields <n> --batch <n> --seed <n> --api <url>
+medatat push --cases <n> --fields <n> --batch <n> --seed <n> --concurrency <n> --api <url>
 
 Pushes a synthetic corpus into a running Worker through the ordinary write path:
 POST /cases, then repeated POST /cases/{id}/values. Slower than a bulk endpoint and
