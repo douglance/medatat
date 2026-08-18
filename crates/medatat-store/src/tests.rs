@@ -275,6 +275,11 @@ fn a_v1_database_migrates_forward_to_latest() {
     // passing. Applying V1 to an empty file cannot drift.
     {
         let conn = rusqlite::Connection::open(&path).expect("create v1");
+        // Under `phi` the file is SQLCipher, so the key must be the first statement or
+        // every subsequent one fails. Same key the test helper uses.
+        #[cfg(feature = "phi")]
+        conn.execute_batch(&format!("PRAGMA key = \"x'{}'\";", "7f".repeat(32)))
+            .expect("key v1");
         conn.execute_batch(super::schema::V1).expect("apply V1");
         conn.execute("INSERT INTO schema_version (version) VALUES (1)", [])
             .expect("stamp v1");
