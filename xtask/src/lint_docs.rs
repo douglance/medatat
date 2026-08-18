@@ -108,11 +108,45 @@ fn links(markdown: &str) -> Vec<String> {
     out
 }
 
+/// The set of paths git tracks, or `None` when git cannot answer.
+///
+/// A link to a file that exists on *this* disk but is not in the repository resolves
+/// locally and is broken for everyone else. That is not hypothetical: three documents
+/// linked to `AGENTS.md`, which a global gitignore keeps out of the repo, and the lint
+/// passed on the machine that wrote them and failed on the first clone. Checking
+/// existence alone would have missed it forever.
+fn tracked(root: &Path) -> Option<BTreeSet<PathBuf>> {
+    let out = std::process::Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(["ls-files", "-z"])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    Some(
+        String::from_utf8_lossy(&out.stdout)
+            .split('\0')
+            .filter(|s| !s.is_empty())
+            .map(|s| {
+                let p = root.join(s);
+                p.canonicalize().unwrap_or(p)
+            })
+            .collect(),
+    )
+}
+
 /// Checks every Markdown file under `root`, returning the links that do not resolve.
 pub fn lint(root: &Path) -> Result<Vec<Broken>> {
     let mut files = Vec::new();
     collect(root, &mut files)?;
     files.sort();
+
+    // git is asked about the repository root, not `docs/`, so links that climb out of the
+    // docs tree are still judged correctly.
+    let repo_root = root.parent().unwrap_or(root);
+    let tracked_files = tracked(repo_root);
 
     let mut broken = Vec::new();
     for file in &files {
@@ -144,6 +178,20 @@ pub fn lint(root: &Path) -> Result<Vec<Broken>> {
                     from: file.clone(),
                     link: link.clone(),
                     reason: "no such file".into(),
+                });
+                continue;
+            }
+
+            if !path_part.is_empty()
+                && let Some(t) = &tracked_files
+                && !t.contains(&target.canonicalize().unwrap_or_else(|_| target.clone()))
+            {
+                broken.push(Broken {
+                    from: file.clone(),
+                    link: link.clone(),
+                    reason: "the file exists here but is not tracked by git, so it is \
+                             missing for anyone who clones the repository"
+                        .into(),
                 });
                 continue;
             }
@@ -239,6 +287,38 @@ mod tests {
         .unwrap();
         fs::write(dir.path().join("b.md"), "## Two things\n").unwrap();
         assert!(lint(dir.path()).unwrap().is_empty());
+    }
+
+    /// The case that motivated the check: the target is present on disk, so `exists()`
+    /// is happy, but git does not track it and a clone would not have it.
+    #[test]
+    fn a_file_that_exists_but_is_untracked_is_reported() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path();
+        let git = |args: &[&str]| {
+            std::process::Command::new("git")
+                .arg("-C")
+                .arg(repo)
+                .args(args)
+                .output()
+                .expect("git")
+        };
+        if !git(&["init", "-q"]).status.success() {
+            return; // no git on this machine; the lint degrades to existence-only anyway
+        }
+        let docs = repo.join("docs");
+        fs::create_dir_all(&docs).unwrap();
+        fs::write(repo.join("UNTRACKED.md"), "# nope\n").unwrap();
+        fs::write(docs.join("a.md"), "# A\n\n[x](../UNTRACKED.md)\n").unwrap();
+        git(&["add", "docs/a.md"]);
+
+        let broken = lint(&docs).unwrap();
+        assert_eq!(broken.len(), 1, "{broken:?}");
+        assert!(
+            broken[0].reason.contains("not tracked"),
+            "got: {}",
+            broken[0].reason
+        );
     }
 
     #[test]

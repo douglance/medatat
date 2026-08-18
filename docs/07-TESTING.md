@@ -35,8 +35,8 @@ one-case control built in the same process and interleaved with the subject**, n
 and 10 ms thresholds. Absolute wall-clock in this file moves up to 2× with host load
 alone — measured: on a loaded machine the one-case control saved in 9.1 ms against Bench 2's
 recorded 5.2 ms — so an absolute gate here would fail for reasons that have nothing to do
-with the corpus, and the only available fix would be to weaken it, which is the one move
-[AGENTS.md](../AGENTS.md) forbids. Benches 1 and 2 keep the absolute gates on the fixture
+with the corpus, and the only available fix would be to weaken it — and a gate that gets
+weakened whenever it fails has stopped being a gate. Benches 1 and 2 keep the absolute gates on the fixture
 where they mean something. Bench 5 additionally asserts the 200 ms requirement as a floor,
 and prints the host load average beside every result so a number from one day can be
 compared with a number from another. Shrink the corpus with `MEDATAT_BENCH_CASES` /

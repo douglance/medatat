@@ -81,8 +81,7 @@ Work top to bottom. Items 1–3 are external and have long lead times; start the
       `store::tests::wrong_key_fails`, `core::tests::debug_redacts`,
       `ui::tests::closing_case_clears_inputs`.
 - [ ] 6. **Key storage reconsidered.** The key is a mode-0600 `medatat.key` file beside the
-      database, at the user's explicit instruction not to use the OS keychain
-      ([AGENTS.md](../AGENTS.md) rule 11). Record what that costs, because it is the one
+      database, at the user's explicit instruction not to use the OS keychain. Record what that costs, because it is the one
       protection PHI mode is otherwise bought for: a key stored next to the ciphertext
       travels with it, so a copied database directory, a synced backup, a restored Time
       Machine snapshot, or a handed-over disk image carries both halves. It protects

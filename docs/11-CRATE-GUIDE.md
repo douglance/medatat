@@ -286,7 +286,9 @@ migrations/
 
 `routes/`, `store/`, and `case_do.rs` are behind `#[cfg(target_arch = "wasm32")]`, so
 `cargo test -p medatat-worker` does not compile them at all. Cross-compiling is not
-optional — see the traps in [AGENTS.md](../AGENTS.md).
+optional, and a green `wasm32` compile does not imply a green bundle: `worker-build` runs
+`wasm-bindgen` afterwards and fails on its own. See
+[09-SETUP §Troubleshooting](09-SETUP.md#troubleshooting).
 
 ```rust
 // logic/case_store.rs — pure, tested natively without WASM
