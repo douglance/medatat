@@ -13,14 +13,21 @@ is built on it.
 
 ## Performance benchmarks
 
-`criterion` in `medatat-testkit`. Benches 1–3 gate CI. Bench 4 runs nightly.
+`criterion` in `medatat-testkit`. **Benches 1 and 2 gate today**; 3 and 4 do not yet, and
+each says so in its own module docs rather than asserting a number it cannot measure.
 
 | Bench | Measures | Target | Measured (macOS, 2026-08-17) | Proves | CI |
 |---|---|---|---|---|---|
 | **1** | Local SQLite → `FormInstance`, 500 fields, warm | **< 5 ms** | **195 µs** ✅ | R13 | gate |
 | **2** | Local write of 300 changed fields, one transaction | **< 10 ms** | **5.2 ms** ✅ | R14 | gate |
-| **3** | Open-case intent → first painted frame, 200 cases | **p99 < 50 ms** | R13, R15 | gate |
-| **4** | Full sync of one case from a **cold, hibernated** DO; seeding throughput | recorded | R16 | nightly |
+| **3** | Open-case intent → first painted frame, 200 cases | **p99 < 50 ms** | — | R13, R15 | not yet |
+| **4** | Full sync of one case from a **cold, hibernated** DO; seeding throughput | recorded | — | R16 | placeholder |
+
+Bench 3 measures only `core.build_instance` today, because two of its four spans live in
+`medatat-ui`, which is still being built. The 50 ms gate belongs to the assembled bench and
+arrives with it. Bench 4 registers an empty group until `medatat-sync` and `medatat-worker`
+can be driven end to end. Both are deliberate: a bench that asserts a number it did not
+measure is worse than one that admits it is not ready.
 
 Requirements R13 and R14 state 200 ms. The gates are set at 5 ms and 10 ms — a ~20–40×
 margin. That margin is deliberate: it means an unnoticed regression trips the gate long
@@ -191,17 +198,29 @@ medatat api cases "$CASE" values -X POST -H "Authorization: Bearer $TOK" \
 
 ## CI pipeline
 
+`.github/workflows/ci.yml` exists and is committed. **It has never run** — the repository
+has no remote yet — so until a green run has been seen, every gate is still enforced by
+running it yourself.
+
 ```yaml
-# .github/workflows/ci.yml — shape, not final
+# .github/workflows/ci.yml
 jobs:
+  preflight:  # ubuntu — reject absolute path deps; `cargo metadata --locked` resolves
   check:      # ubuntu — fmt, clippy -D warnings, cargo xtask lint-no-spinner
   test:       # macos, ubuntu, windows — cargo test --workspace
   phi:        # ubuntu — cargo build+test --workspace --features phi (keeps the path alive)
-  worker:     # ubuntu — wrangler dev + scripts/smoke.sh
-  bench:      # ubuntu — cargo bench, fail on Bench 1–3 threshold regression
+  wasm:       # ubuntu — cross-compile medatat-worker, then `worker-build`, then bundle size
+  bench:      # ubuntu — cargo bench, fail on a Bench 1 or 2 threshold regression
   gpui-build: # macos, ubuntu, windows — cargo build -p medatat-ui (compile guard)
-  nightly:    # Bench 4 against the seeded corpus
 ```
+
+`preflight` exists because Cargo resolves the whole workspace graph even for a single-crate
+build, so one unresolvable dependency fails every job at once; catching it in one place
+turns six confusing failures into one actionable message.
+
+There is no `worker` job yet. `scripts/smoke.sh` needs a sign-in code that only email
+delivers, and `wrangler.jsonc` still carries placeholder D1 and KV ids, so the job would be
+permanently red — which teaches everyone to ignore red. It arrives when both are resolved.
 
 Cache `~/.cargo/git` aggressively — Cargo clones ~1 GB of Zed history for the `gpui`
 dependency. Set `CARGO_NET_GIT_FETCH_WITH_CLI=true`.
@@ -214,7 +233,7 @@ the checklist for changing that is [12-PHI-READINESS.md](12-PHI-READINESS.md).
 ```rust
 pub fn synthetic_form(field_count: usize) -> FormDef;      // spread across all 7 kinds
 pub fn synthetic_case(form: &FormDef, seed: u64) -> Vec<(FieldId, Value)>;
-pub fn seed_corpus(cases: usize, out: &Path) -> Result<CorpusStats>;
+pub fn seed_corpus(cases: usize, fields_per_case: usize, out: &Path) -> Result<CorpusStats>;
 ```
 
 Names, MRNs, and dates come from a fixed generator with a seeded RNG — deterministic, so a

@@ -63,7 +63,7 @@ rework:
 - [ ] `wrangler deploy --dry-run` reports bundle size and startup within limits.
 - [ ] `EXPLAIN QUERY PLAN` confirms the case-load query is a PK range scan.
 
-**If Benches 1–3 miss, stop and revisit [01-ARCHITECTURE.md](01-ARCHITECTURE.md) before
+**If Benches 1 or 2 miss, stop and revisit [01-ARCHITECTURE.md](01-ARCHITECTURE.md) before
 building anything else.**
 
 ### Prerequisite
@@ -196,7 +196,7 @@ would close the gap, and it needs a human at an unlocked screen.
 - [ ] 100,000 synthetic cases / ~100M values seeded (R16).
 - [ ] Bench 4 run against the full corpus; results recorded.
 - [ ] Actual seeding time and Cloudflare cost recorded against the M1 extrapolation.
-- [ ] Benches 1–3 re-run against a client holding a realistic caseload; still inside targets.
+- [ ] Benches 1 and 2 re-run against a client holding a realistic caseload; still inside targets.
 - [ ] `POST /admin/reindex` implemented and verified to rebuild `case_index` from the DOs.
 - [ ] A deliberately corrupted `case_index` row is detected and repaired by reindex.
 

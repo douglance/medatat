@@ -4,7 +4,7 @@
 //! server does not need independent schema evolution, and a duplicate schema is somewhere
 //! for the two halves to drift apart.
 
-use crate::def::{FieldKind, FormDef};
+use crate::def::{FieldDef, FieldKind, FormDef};
 use crate::error::FieldError;
 use crate::ids::{ActorId, CaseId, CaseRev, ConfigRev, FieldId, FormId};
 use crate::value::Value;
@@ -139,6 +139,16 @@ impl Role {
 pub struct ConfigDelta {
     pub config_rev: ConfigRev,
     pub forms: Vec<FormDef>,
+    /// **Every** field that exists, including ones placed in no form.
+    ///
+    /// A field outlives its placement: removing it from a section removes the placement
+    /// only, and its stored values survive. But `forms` alone can only ever describe
+    /// *placed* fields, so without this list a client has no route back to a field it has
+    /// unplaced — the values sit in `field_value` with nothing referencing them. That is
+    /// what backs the builder's "Unplaced fields" drawer, and it is why the drawer can
+    /// survive a restart. See `docs/06-FORM-BUILDER.md`.
+    #[serde(default)]
+    pub fields: Vec<FieldDef>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

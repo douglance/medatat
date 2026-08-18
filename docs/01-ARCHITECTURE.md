@@ -67,7 +67,7 @@ store removed that, and with it removed cold-start latency as a UI risk entirely
 | `medatat-sync` | `Transport` trait, delta sync loop, conflict handling. **Must not depend on reqwest.** | core, store |
 | `medatat-ui` | The GPUI app. **The only crate that may `use gpui`.** | core, store, sync, gpui, gpui-component |
 | `medatat-worker` | Cloudflare Worker + `CaseDO`. Compiles to `cdylib` / wasm32. | core, worker |
-| `medatat-cli` | incurs-based CLI driver for testing and seeding. | core, sync, incurs, reqwest |
+| `medatat-cli` | incurs-based CLI driver for testing and seeding. | core, testkit, incurs, reqwest, tokio |
 | `medatat-testkit` | Synthetic corpus generator, `FakeClock`, `MockTransport`. Dev-dependency only. | core, store |
 
 **Dependency direction is strictly one-way.** `medatat-core` depends on nothing in the

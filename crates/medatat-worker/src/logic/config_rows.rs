@@ -295,9 +295,19 @@ pub fn assemble_config(
         out.push(FormDef::new(form_id, form.name.clone(), section_defs));
     }
     out.sort_by(|a, b| a.name.cmp(&b.name));
+
+    // Every field that exists, placed or not. `defs` already holds them all, because a
+    // placement is resolved *against* this map rather than defining it — so an unplaced
+    // field is present here and simply never referenced by a section. Shipping the list is
+    // what gives the builder's Unplaced drawer a route back to a field's stored values
+    // after a restart; `forms` alone can only ever describe placed fields.
+    let mut all_fields: Vec<FieldDef> = defs.values().map(|d| (**d).clone()).collect();
+    all_fields.sort_by(|a, b| a.key.cmp(&b.key));
+
     Ok(ConfigDelta {
         config_rev,
         forms: out,
+        fields: all_fields,
     })
 }
 

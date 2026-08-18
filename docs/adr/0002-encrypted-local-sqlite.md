@@ -27,9 +27,16 @@ user-triggered read and write is local and synchronous. Sync to Cloudflare runs 
 background executor and is never awaited by the UI.
 
 Encryption is **conditional**: under `--features phi` the database is SQLCipher with a
-32-byte `OsRng` key held in the OS keychain (Keychain / Credential Manager / Secret
-Service). Default builds use plain SQLite, because the system currently handles synthetic
-data only. See [12-PHI-READINESS.md](../12-PHI-READINESS.md).
+32-byte `OsRng` key. Default builds use plain SQLite, because the system currently handles
+synthetic data only. See [12-PHI-READINESS.md](../12-PHI-READINESS.md).
+
+> **Amendment, 2026-08-18.** This ADR originally placed the key in the OS keychain
+> (Keychain / Credential Manager / Secret Service). It is now a hex-encoded `medatat.key`
+> file with mode 0600, beside the database, at the explicit direction of the system owner.
+> The keychain argument — that a key file travels with the ciphertext it protects, so a
+> copied directory is a copied secret — still stands and is recorded as a known limitation;
+> it did not override a direct instruction. `keyring` is not a dependency of any crate.
+> The locality decision below is unaffected.
 
 The locality decision — local store on the critical path — is independent of the encryption
 decision, and is the part that matters for R13/R14/R15.
@@ -56,9 +63,9 @@ Three risks disappear rather than being mitigated:
 **On the constraint this reverses.** An earlier decision — "no PHI on workstation disks" —
 was taken during a self-hosted Postgres design and carried into the Cloudflare design
 without being re-examined. It was the single constraint most responsible for failing the
-headline requirement. Encryption at rest with an OS-keychain-held key is the standard,
-defensible answer for PHI on an endpoint, costs the latency requirement nothing, and can be
-switched on when it is actually needed.
+headline requirement. Encryption at rest is the standard, defensible answer for PHI on an
+endpoint, costs the latency requirement nothing, and can be switched on when it is actually
+needed. (Where the key lives was revised — see the amendment above.)
 
 ## Consequences
 
@@ -75,13 +82,21 @@ disabled core dumps and zeroize-on-drop.
 deliberately kept to delta sync with no CRDT ([04-SYNC.md](../04-SYNC.md)), because cases are
 effectively single-writer in practice and the sync path is not latency-sensitive.
 
-**Accepted:** under `phi` on Linux without a Secret Service daemon, the app falls back to an
-in-memory database and re-syncs each launch. It must never silently write plaintext when the
-caller asked for encryption. Default builds are unaffected.
+**Accepted:** the key file sits beside the ciphertext it protects, so a copied directory is
+a copied secret, and it protects nothing from another process running as the same user. This
+is the downgrade the amendment above records; it is adequate for a synthetic corpus and is a
+decision to revisit before real patient data. A missing or malformed `medatat.key` reports
+"locked" and never mints a replacement — doing so would render the database it guarded
+permanently unreadable, which presents to the user as total data loss. Default builds are
+unaffected.
+
+*(This entry previously described a Secret Service fallback on Linux. No keyring daemon is
+involved any more, so that consequence no longer applies.)*
 
 ## Verification
 
-Benches 1–3 ([07-TESTING.md](../07-TESTING.md)) gate CI at 5 ms, 10 ms, and 50 ms — targets
+Benches 1 and 2 ([07-TESTING.md](../07-TESTING.md)) assert hard thresholds at 5 ms and
+10 ms — targets
 set far below the 200 ms requirement so a regression trips long before it is user-visible.
 `EXPLAIN QUERY PLAN` asserts the case-load query is a primary-key range scan; that test
 protects the margin.

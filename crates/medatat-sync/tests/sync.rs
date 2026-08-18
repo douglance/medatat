@@ -387,6 +387,7 @@ async fn config_sync_stores_forms_and_records_the_revision() {
     f.mock.set_config(ConfigDelta {
         config_rev: ConfigRev(7),
         forms: vec![def.clone()],
+        fields: vec![],
     });
 
     let rev = f.engine.sync_config().await.unwrap();

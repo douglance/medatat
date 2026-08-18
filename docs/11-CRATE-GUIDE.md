@@ -230,37 +230,48 @@ Cloudflare Worker and `CaseDO`. Compiles to `cdylib` / wasm32.
 ```
 src/
   lib.rs            #[event(fetch)] entry, router
-  routes/
+  error.rs          LogicError + the one mapping onto status codes
+  http.rs           every documented status and envelope, as pure fns — tests natively
+  routes/           ← WASM only: parse, authenticate, call logic/, encode
+    mod.rs          bindings, session resolution, body/query helpers, Response encoding
     auth.rs         request/verify/logout/me
     config.rs       GET /config, all mutations (admin only)
     cases.rs        list, create, values get/put — proxies to CaseDO
-    bulk.rs         seeding, export, reindex
-  case_do.rs        #[durable_object] CaseDO
+    bulk.rs         bulk create, export, reindex
+  case_do.rs        #[durable_object] CaseDO                       ← WASM only
   logic/            ← pure fns over traits: tests natively, no WASM
     values.rs       handle_put_values, conflict detection
     auth.rs         code generation, verification, session minting
     config.rs       config validation (col_span <= columns, kind immutability)
-  store/
+    config_rows.rs  D1 rows <-> ConfigDelta/FieldLookup, field kind <-> (tag, config JSON)
+    cases.rs        worklist paging, keyset cursor, bulk bounds
+    case_store.rs   CaseStore trait + FieldLookup + in-memory test impl
+  store/            ← WASM only
     d1.rs           D1 queries
     kv.rs           auth codes, sessions
-    case_store.rs   CaseStore trait + SqlStorage impl + in-memory test impl
+    case_sql.rs     CaseStore over a Durable Object's SqlStorage
   mail.rs           trait Mailer + send_email impl  (seam for Postmark/SES)
 migrations/
   0001_init.sql
 ```
 
+`routes/`, `store/`, and `case_do.rs` are behind `#[cfg(target_arch = "wasm32")]`, so
+`cargo test -p medatat-worker` does not compile them at all. Cross-compiling is not
+optional — see the traps in [AGENTS.md](../AGENTS.md).
+
 ```rust
-// logic/values.rs — pure, tested natively without WASM
+// logic/case_store.rs — pure, tested natively without WASM
 pub trait CaseStore {
-    fn rev(&self) -> Result<CaseRev>;
-    fn changed_since(&self, fields: &[FieldId], since: CaseRev) -> Result<Vec<ValueRow>>;
-    fn get_all(&self, since: CaseRev) -> Result<Vec<ValueRow>>;
-    fn put(&self, changes: &[ValueChange], rev: CaseRev, actor: ActorId) -> Result<()>;
+    fn rev(&self) -> LogicResult<CaseRev>;
+    fn changed_since(&self, fields: &[FieldId], since: CaseRev) -> LogicResult<Vec<ValueRow>>;
+    fn get_all(&self, since: CaseRev) -> LogicResult<Vec<ValueRow>>;
+    fn put(&self, changes: &[ValueChange], rev: CaseRev, actor: &ActorId) -> LogicResult<()>;
 }
 
+// logic/values.rs
 pub fn handle_put_values<S: CaseStore>(
-    store: &S, req: PutValuesReq, actor: ActorId, defs: &FormRegistry,
-) -> Result<PutValuesResp, WorkerError>;
+    store: &S, req: PutValuesReq, actor: &ActorId, defs: &FieldLookup,
+) -> LogicResult<PutValuesResp>;
 ```
 
 **Rules.** **No DDL in the `CaseDO` constructor** — it runs on every cold start; create the
@@ -276,14 +287,18 @@ so it tests without workerd.
 
 ```
 src/
-  main.rs
+  main.rs       `seed` is handled locally; everything else goes to the fetch gateway
   fetch.rs      impl incurs::fetch::FetchHandler over reqwest
-  seed.rs       corpus generation, bulk upload
-  dev.rs        dev-only helpers (e.g. `medatat dev last-code`)
+  seed.rs       corpus generation to a directory
 ```
 
+There is **no `dev` subcommand**. A sign-in code is delivered only by email and only its
+sha256 is stored, so nothing can read one back; `scripts/smoke.sh` takes it in `SMOKE_CODE`
+and skips the authenticated half when it is absent. `seed` writes a corpus to disk and does
+not upload it — `POST /bulk/cases` creates index rows without values.
+
 ```rust
-pub struct HttpFetch { base: Url, client: reqwest::Client }
+pub struct HttpFetch { base: String, client: reqwest::Client, default_token: Option<String> }
 
 #[async_trait::async_trait]
 impl incurs::fetch::FetchHandler for HttpFetch {

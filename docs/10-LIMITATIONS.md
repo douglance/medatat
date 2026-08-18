@@ -143,7 +143,7 @@ Ordered by expected cost × probability.
 | # | Risk | Impact | Mitigation |
 |---|---|---|---|
 | 1 | **Linux Vulkan unavailable** on target hardware (VMs, RDP, older Intel) | App will not start | M0 gate; CI-test `lavapipe`; document `VK_ICD_FILENAMES` |
-| 2 | **Benches 1–3 miss at M1** | Architecture is wrong | M1 is a stop-the-line gate, before anything is built on it |
+| 2 | **Benches 1 and 2 miss at M1** | Architecture is wrong | M1 is a stop-the-line gate, before anything is built on it |
 | 3 | **GPUI is pre-1.0**, pinned to a git SHA of a code editor's internals | Breaking changes on upgrade | Hard `rev` pins, committed lockfile, weekly bump-and-build CI job, `widgets::*` wrapper |
 | 4 | **`gpui-component` bus factor** — one company's library, the only thing making forms viable | Form layer orphaned | Apache-2.0; vendoring a fork is the contingency |
 | 5 | **`workers-rs` bus factor** — one maintainer, 184 open issues, `send_email` undocumented | Worker blocked | M1 proves the three unknowns first; escape hatch is TS/Hono + `medatat-core` via `wasm-bindgen` |

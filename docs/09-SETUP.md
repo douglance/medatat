@@ -206,14 +206,24 @@ VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.x86_64.json cargo run -p medata
 
 ## The `medatat` CLI
 
-`medatat-cli` is built on `incurs` (Rust crate, v0.5.3, at
-`/Users/douglance/Developer/lv/incurs`). It is a **CLI framework**, not a test runner — it
-provides a curl-style fetch gateway; assertions come from `jq` or `cargo test`.
+`medatat-cli` is built on `incurs`, a **CLI framework**, not a test runner — it provides a
+curl-style fetch gateway; assertions come from `jq` or `cargo test`. It is a git dependency
+pinned by rev in the workspace `Cargo.toml`, so nothing needs installing separately and no
+absolute path has to exist on your machine:
+
+```toml
+incurs = { git = "https://github.com/douglance/incurs", rev = "40d88b60…" }
+```
 
 ```bash
-cargo install --path /Users/douglance/Developer/lv/incurs/crates/incurs-cli  # not prebuilt
 cargo install --path crates/medatat-cli
 ```
+
+Two of its behaviours matter when scripting against it, and both bit `scripts/smoke.sh`:
+it **exits 1 on any non-2xx**, and on a non-2xx it **re-wraps the body** as
+`{ok, status, error: <the response envelope>}`, so the Worker's own `error.code` sits one
+level deeper than on success. `--verbose` is the only mode that exposes the HTTP status
+(as `.meta.status`). See the `api` helper at the top of `scripts/smoke.sh`.
 
 `medatat-cli` implements `incurs::fetch::FetchHandler` over `reqwest`, so it works against
 `wrangler dev` or the deployed Worker. Reserved flags: `-X/--method`, `-d/--data/--body`,
@@ -255,7 +265,7 @@ Never commit secrets. `.dev.vars` is gitignored and holds local-only values.
 | `Unknown arguments: email, sending` | wrangler < 4.123.0 | Upgrade wrangler |
 | `no Vulkan device` on Linux | No ICD installed | Install `mesa-vulkan-drivers`; set `VK_ICD_FILENAMES` for lavapipe |
 | Clone fails on Windows | Deep Zed paths | `git config --global core.longpaths true` |
-| `SQLITE_NOTADB` on open (`--features phi`) | Wrong SQLCipher key | Keychain entry missing or changed. Report "cannot unlock"; never recreate the DB |
+| `SQLITE_NOTADB` on open (`--features phi`) | Wrong SQLCipher key | `medatat.key` beside the database does not match its ciphertext. Report "cannot unlock"; never recreate the DB |
 | `Locked` on open with `--features phi` | `medatat.key` missing or malformed beside the database | Restore the key file. Never delete the database — it is recoverable only with that key |
 | Email never arrives | Domain not onboarded | `wrangler email sending list`; check `_dmarc` and DKIM records |
 | `Script startup exceeded CPU time limit` (10021) | WASM bundle too heavy | Keep `lto` and `opt-level = "z"`; check `worker-build` ran `wasm-opt`. Do **not** add `strip` to the wasm profile — it breaks the bundle (row below) and buys nothing, since `wasm-opt` strips anyway |

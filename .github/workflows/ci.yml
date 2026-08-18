@@ -214,7 +214,9 @@ jobs:
           exit $status
 
   # --------------------------------------------------------------------------
-  # Benches 1-3 assert their own thresholds and fail the process on regression.
+  # Benches 1 and 2 assert their own thresholds and fail the process on regression.
+  # Bench 3 measures open-to-paint but asserts nothing (two of its four spans live in
+  # medatat-ui, so it cannot gate from medatat-testkit). Bench 4 is still a stub.
   # Bench 4 is a placeholder that registers an empty group.
   #
   # NEVER relax a threshold to make this pass. A red bench is the failure being

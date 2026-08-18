@@ -98,7 +98,7 @@ Work top to bottom. Items 1–3 are external and have long lead times; start the
 - [ ] 8. Log audit: no field value reaches a log line, panic message, or tracing span at any
       level. Grep the codebase for value interpolation, and run the app at `RUST_LOG=trace`
       against a seeded case to confirm.
-- [ ] 9. Benches 1–3 re-run **with `--features phi`**. SQLCipher adds per-page encryption
+- [ ] 9. Benches 1 and 2 re-run **with `--features phi`**. SQLCipher adds per-page encryption
       cost; confirm the R13/R14 gates still hold rather than assuming they do.
 
 ### Deployment
