@@ -50,9 +50,12 @@ rework:
 - [ ] **Bench 2** — 300-field write, one transaction: **p99 < 10 ms**.
 - [ ] **Bench 3** — open-to-first-paint over 200 cases: **p99 < 50 ms**.
 - [ ] **Bench 4** — cold-DO full-case sync measured and recorded (no threshold).
-- [x] Seeding throughput measured on **1,000 cases**, with a full-corpus extrapolation.
-      **1.90 cases/sec** through the normal write path: 1,000 ≈ 9 min, 100,000 ≈ 14.6 h
-      serial. The remedy is client-side concurrency in `medatat-cli`.
+- [ ] Seeding throughput measured on **1,000 cases**, with a full-corpus extrapolation.
+      **Harness built and proven end to end; throughput NOT credibly measured.** The local
+      emulator's rate degrades with store size (1.90 → 1.19 cases/s as `.wrangler/state`
+      grew), so any figure from it — and any extrapolation off it — is an artifact. Needs
+      one run against a deployed Worker. See
+      [07-TESTING.md](07-TESTING.md#throughput-is-not-credibly-measurable-on-the-local-emulator).
 - [ ] **Bench 4 no longer blocks on the 100k corpus.** "Cold" is a property of time and
       eviction, not corpus size — each DO is an independent database, so 20–50 cases left
       past the eviction window answer it. See [07-TESTING.md](07-TESTING.md#bench-4-detail). Run it with

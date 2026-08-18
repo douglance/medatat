@@ -94,11 +94,29 @@ separate:
 | Does the topology hold at 100k cases? (R16, M7) | Mostly answerable by measuring per-case storage on a small corpus and multiplying — the DO sizing in [02-DATA-MODEL.md](02-DATA-MODEL.md) already is that extrapolation |
 | How does D1 `case_index` behave at 100k rows? | Genuinely needs the rows — but only **index** rows, which carry no values. `POST /bulk/cases` creates exactly those, cheaply. This is the one job that endpoint is well shaped for |
 
-**Measured throughput, 2026-08-18:** 1.90 cases/sec through the normal `POST /cases` +
-`POST /cases/{id}/values` path, after an 8.1 s form publish. 1,000 cases ≈ 9 minutes;
-100,000 ≈ **14.6 hours** serial. The remedy is client-side concurrency in `medatat-cli` —
-N cases in flight, no new server surface — and the honest first question for M7 is whether
-the full corpus needs to exist at all.
+### Throughput is not credibly measurable on the local emulator
+
+An earlier version of this document recorded **1.90 cases/sec** as a measured figure and
+extrapolated 100,000 cases to 14.6 hours. **Both were artifacts.** Local throughput degrades
+with the size of the store:
+
+| run | `.wrangler/state` before | rate |
+|---|---|---|
+| first | empty | 100 cases in 65 s → **1.90 cases/s** |
+| second | 249 cases | 100 cases in 92 s → **1.19 cases/s** |
+
+Same code, same batch size, same machine; the only variable is how much was already stored.
+So 1.90 is a best case on an empty store, not a steady state, and any linear extrapolation
+from it is optimistic by an unknown factor.
+
+The degradation is almost certainly miniflare keeping every Durable Object in one process
+rather than anything about production — which is precisely why the real number cannot be
+obtained from here. **Seeding throughput needs one run against a deployed Worker with real
+D1 and KV.** Until then the honest status is: *harness built and proven end to end;
+throughput not credibly measured.*
+
+If the real number does turn out to be slow, the remedy is client-side concurrency in
+`medatat-cli` — N cases in flight, no new server surface.
 
 **Seeding goes through the normal write path deliberately.** A bulk endpoint that writes a
 whole case in one shot stamps every row with the same `rev`. Per-field conflict detection
@@ -114,9 +132,12 @@ heap. A second attempt died **earlier, at case 138**.
 
 Two things make it worse than it first looks:
 
-- **`NODE_OPTIONS=--max-old-space-size` does not appear to help.** The heap that aborts is
-  inside **workerd**, a separate binary embedding its own V8, not the Node process wrangler
-  runs. (Inferred, not proven — the flag could not be observed reaching workerd.)
+- **`NODE_OPTIONS=--max-old-space-size` does not work. Proven, not inferred.** A restart
+  with `12288` died at the same **1398 MB**. `wrangler dev` spawns `workerd` as a separate
+  process with its own V8, and `NODE_OPTIONS` never reaches it. The real remedy is to
+  **chunk the run and restart the Worker between chunks** — `medatat push --start <n>`
+  resumes at a case index, and seeds derive from that index, so a resumed run produces
+  exactly the cases an uninterrupted one would.
 - **Residual state compounds it.** `.wrangler/state` held 52 MB of the first run's objects,
   and the second run loaded those *plus* its own, which is why it failed sooner. **Clear
   `.wrangler/state` between seeding runs** or each retry starts further into the hole.
