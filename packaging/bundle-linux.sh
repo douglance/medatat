@@ -123,6 +123,20 @@ printf 'Source: medatat\n\nPackage: medatat\nArchitecture: any\n' > "$TMP/debian
     sed 's/^/  /' "$TMP/warn" >&2
     exit 1; }
 DEPENDS="$(sed -n 's/^shlibs:Depends=//p' "$TMP/deps")"
+
+# One dependency dpkg-shlibdeps cannot find, added by hand and only this one.
+#
+# shlibdeps reads the ELF, so it sees libraries and nothing else. GPUI resolves a font at
+# startup and panics outright if none of its fallbacks exist -- verified by installing this
+# package on a stock ubuntu:24.04 container, where it died with "failed to resolve font
+# '.SystemUIFont' or any of the fallbacks" before opening a window. Adding
+# fonts-dejavu-core, which provides the DejaVu Sans at the end of that fallback list, takes
+# the same container all the way to "window open".
+#
+# Most desktops already have fonts, which is exactly why this was invisible: it only bites
+# a minimal install, and a minimal install is what a container or a locked-down workstation
+# is.
+DEPENDS="${DEPENDS:+$DEPENDS, }fonts-dejavu-core"
 [ -s "$TMP/warn" ] && { echo "dpkg-shlibdeps warnings:"; sed 's/^/  /' "$TMP/warn"; }
 
 {
