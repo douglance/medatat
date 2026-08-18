@@ -32,10 +32,10 @@ these IDs.
 | R10 | Select dropdowns | Renders a dropdown from a configured option list; type-ahead works |
 | R11 | Text areas | Renders a multi-line text input; value round-trips |
 | R12 | 1–3 columns per section | Each section stores a column count of 1, 2, or 3; fields may span up to that count |
-| R13 | Form load < 200ms with hundreds of fields | Bench 1 + Bench 3, CI-gated |
-| R14 | Form save < 200ms with hundreds of fields | Bench 2, CI-gated |
-| R15 | No loading spinners. Ever. | Bench 3 (open-to-paint p99 < 50 ms) **and** a CI lint asserting no spinner/progress component exists in the UI crate |
-| R16 | ~100M field values across ~100k patient cases | Bench 4 against a seeded 100k-case / 100M-value corpus |
+| R13 | Form load < 200ms with hundreds of fields | Bench 1, gated at 5 ms. **Measured 195 µs** |
+| R14 | Form save < 200ms with hundreds of fields | Bench 2, gated at 10 ms. **Measured 5.2 ms** for 300 fields, 86 µs for one |
+| R15 | No loading spinners. Ever. | A lint asserting no spinner/progress/skeleton exists in the UI crate. Bench 3 measures open-to-paint but **asserts nothing** — two of its four spans live in `medatat-ui` |
+| R16 | ~100M field values across ~100k patient cases | **Not yet verified.** Per-case sizing (~100 KB of a 10 GB DO budget) is an extrapolation; the 100k corpus has never been built. See [10-LIMITATIONS](10-LIMITATIONS.md) |
 
 ## Compliance matrix
 
@@ -48,10 +48,33 @@ these IDs.
 | R5–R11 | `FieldKind` variants mapped to gpui-component widgets | [05](05-UI-SPEC.md) | `widget_spec` snapshot tests, one per kind |
 | R8 | Hand-built masked input; `parse_time_24` / `format_time_24` | [05 §Time field](05-UI-SPEC.md#the-24-hour-time-field-r8) | `core::value::time` proptests |
 | R12 | `section.columns` CHECK 1..3; `col_span` clamped at render | [02](02-DATA-MODEL.md), [05](05-UI-SPEC.md) | `effective_columns` unit tests |
-| R13 | Local encrypted SQLite is the UI's read path | [01](01-ARCHITECTURE.md) | Bench 1, Bench 3 |
-| R14 | Local synchronous write + background outbox drain | [04](04-SYNC.md) | Bench 2 |
-| R15 | Whole assigned caseload pre-synced before the user opens anything | [04 §Caseload pre-sync](04-SYNC.md#caseload-pre-sync) | Bench 3 + spinner lint |
-| R16 | One Durable Object per case, ~100 KB of a 10 GB budget each | [01](01-ARCHITECTURE.md), [02](02-DATA-MODEL.md) | Bench 4 |
+| R13 | Local encrypted SQLite is the UI's read path | [01](01-ARCHITECTURE.md) | Bench 1 ✅ 195 µs |
+| R14 | Local synchronous write + background outbox drain | [04](04-SYNC.md) | Bench 2 ✅ 5.2 ms |
+| R15 | Whole assigned caseload pre-synced before the user opens anything | [04 §Caseload pre-sync](04-SYNC.md#caseload-pre-sync) | spinner lint ✅; caseload pre-sync itself **not yet wired to the UI** |
+| R16 | One Durable Object per case, ~100 KB of a 10 GB budget each | [01](01-ARCHITECTURE.md), [02](02-DATA-MODEL.md) | **unverified at scale** |
+
+## Verification status — 2026-08-18
+
+Read this before trusting a tick anywhere else.
+
+**Verified by measurement:** R13 (195 µs against a 200 ms requirement), R14 (5.2 ms for 300
+fields; 86 µs for the single-field case that actually happens while typing).
+
+**Verified by execution:** R5–R12 through widget-spec snapshots and 14 headless
+`#[gpui::test]` cases that dispatch real keystrokes; R2/R3 through runtime round-trips;
+form-builder acceptance item 9 through a real SQLite store.
+
+**Verified structurally:** R15 — a lint asserts no spinner exists, and the design makes one
+unnecessary rather than merely discouraged.
+
+**Not verified:** R16. Per-case sizing is an extrapolation and the 100k corpus has never
+been built. The two numbers that would settle it — seeding throughput and Durable Object
+cold-wake — were measured locally, turned out to be emulator artifacts, and are recorded as
+unmeasured pending a real deployment.
+
+**Verified on one platform only.** Everything above is macOS. Windows and Linux have never
+been built, and key routing is demonstrably platform-specific — see
+[10-LIMITATIONS §10](10-LIMITATIONS.md#10-keyboard-evidence-is-macos-only).
 
 ## Explicitly out of scope
 
