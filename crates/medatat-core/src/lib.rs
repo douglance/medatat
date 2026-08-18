@@ -13,6 +13,7 @@
 //!
 //! See `docs/11-CRATE-GUIDE.md`.
 
+pub mod builder;
 pub mod def;
 pub mod error;
 pub mod ids;
@@ -23,6 +24,7 @@ pub mod value;
 pub mod view;
 pub mod wire;
 
+pub use builder::{EditError, FieldEdit, classify, plan_column_change, validate_form};
 pub use def::{FieldDef, FieldKind, FieldOption, FormDef, SectionDef, SectionField};
 pub use error::{CoreError, FieldError, ValidationError};
 pub use ids::{
