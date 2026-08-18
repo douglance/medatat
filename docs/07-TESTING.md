@@ -196,7 +196,47 @@ already on disk: at 1,000 fields per case it aborted at **249 cases on empty sta
 **138 on a 52 MB store**. Quoting it as "about 200 cases" would mislead anyone trying it
 with a different form size.
 
-### Bench 4, measured locally 2026-08-18 — and what it does not say
+### Bench 4, measured in PRODUCTION 2026-08-18 — the real number
+
+Against the deployed Worker (`medatat.doug-lance.workers.dev`), 1,000-value cases read in
+full over HTTP from a US client:
+
+| | reads |
+|---|---|
+| warm | 0.155, 0.158, 0.188, 0.208, 0.155 s → **~0.16 s** |
+| **cold**, case A after 210 s idle | **1.164 s**, then 0.202, 0.190 |
+| **cold**, case B after 210 s idle | **0.589 s**, then 0.185, 0.178 |
+
+**The Durable Object wake costs roughly 0.4–1.0 s on top of a ~0.16 s warm read**, and the
+object is warm again immediately after. This is the number the emulator provably could not
+produce, because it never evicts.
+
+**It is also 3–6× the entire 200 ms requirement**, and that is the point:
+
+> If the network were on the UI's critical path, opening a case that had been idle for
+> three minutes would take **over a second** and blow R13 by roughly 6×.
+
+It does not, because [ADR-0002](adr/0002-encrypted-local-sqlite.md) put local SQLite there
+instead — a 195 µs read. The wake sits on the background sync path where a second costs
+nobody anything. **This is the local-first decision being vindicated by a hard number rather
+than an argument**, and it is the strongest evidence in the project that the architecture
+was chosen correctly.
+
+### Seeding throughput, measured in production
+
+**0.12 cases/s.** 40 cases × 1,000 values = 40,000 values in 800 batches (**2,971 requests**)
+in 330.7 s.
+
+The local figure was **1.90 cases/s** — **16× optimistic**. Retracting it rather than
+publishing it was correct, and for a reason beyond the store-size degradation already
+recorded: the local emulator has no real network, and at ~74 requests per case the round
+trip dominates completely.
+
+**Extrapolated: 100,000 cases ≈ 229 hours serial** — 9.5 days, against the 14.6 h the local
+number implied. Serial seeding of the full corpus is infeasible. Client-side concurrency in
+`medatat-cli` is not an optimisation here, it is a prerequisite; at 20-way it is ~11 hours.
+
+### Bench 4, measured locally — and what it does not say
 
 30 full-size cases (1,000 values each), read in full over HTTP:
 
