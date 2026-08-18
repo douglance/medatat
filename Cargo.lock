@@ -4481,6 +4481,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
+ "futures",
  "incurs",
  "medatat-core",
  "medatat-testkit",
@@ -4580,9 +4581,11 @@ dependencies = [
  "gpui_platform",
  "libc",
  "medatat-core",
+ "medatat-http",
  "medatat-store",
  "medatat-sync",
  "medatat-testkit",
+ "tokio",
  "tracing",
  "tracing-subscriber",
 ]

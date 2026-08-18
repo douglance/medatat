@@ -5,6 +5,9 @@
 #   ./scripts/smoke.sh http://localhost:8787
 #   SMOKE_CODE=418902 ./scripts/smoke.sh http://localhost:8787
 #
+# Against `wrangler dev --local` the code is recovered automatically via
+# `medatat dev last-code`; SMOKE_CODE is only needed against a deployed Worker.
+#
 # Requires: medatat (from crates/medatat-cli), jq.
 set -euo pipefail
 
@@ -42,11 +45,16 @@ api() {
      <<<"$out" 2>/dev/null || printf '{}'
 }
 
-# The HTTP status, via `--verbose` — the only incurs mode that exposes it. Needed because
-# a 204 has no body to assert on, and "always 204" is the whole point of /auth/request.
+# The HTTP status, via `--full-output` — the incurs mode that wraps the response in its own
+# envelope and exposes `.meta.status`. Needed because a 204 has no body to assert on, and
+# "always 204" is the whole point of /auth/request.
+#
+# NOT `--verbose`: incurs has no such flag, so it is parsed as a path segment and the
+# Worker answers 404. That failure is silent here — `.meta.status` reads null, `// 0`
+# turns it into 0, and the assertion reports "returned 0" rather than "your flag is wrong".
 api_status() {
   local out
-  out="$(medatat api --verbose "$@" 2>/dev/null)" || true
+  out="$(medatat api --full-output "$@" 2>/dev/null)" || true
   jq -r '.meta.status // 0' <<<"$out" 2>/dev/null || echo 0
 }
 
@@ -59,26 +67,74 @@ pass "health"
 # --- auth: unknown email must still return 204 (no account enumeration) ----
 UNKNOWN_STATUS=$(api_status auth request -X POST \
   -d '{"email":"nobody-'"$RANDOM"'@example.invalid"}')
+# A 429 here is the *IP* limit (20 per IP per 15 min), not the per-email one — the address
+# is random every run, so it can never be the email budget. Worth separating, because the
+# remedy is a different key.
+#
+# Locally every caller shares one IP window. `wrangler dev` does set CF-Connecting-IP, to
+# the loopback address, so the key is normally `rate:ip:::1` — but do not hardcode that,
+# list it instead, because the address depends on how the Worker is reached.
+if [ "$UNKNOWN_STATUS" = "429" ]; then
+  note "rate limited by IP: 20 requests per IP per 15 min (R1) — the limit is working"
+  note "locally every caller shares one window. Find and clear it:"
+  note "    wrangler kv key list --local --binding AUTH | grep rate:ip"
+  note "    wrangler kv key delete --local --binding AUTH 'rate:ip:::1'"
+  fail "auth/request IP rate limited; see above"
+fi
 [ "$UNKNOWN_STATUS" = "204" ] \
   || fail "auth/request returned $UNKNOWN_STATUS for an unknown email, not 204"
 pass "auth/request does not enumerate accounts"
 
 # --- auth: full magic-code round trip -------------------------------------
-KNOWN_STATUS=$(api_status auth request -X POST -d "{\"email\":\"$EMAIL\"}")
+# When SMOKE_CODE is supplied, this request is SKIPPED on purpose. Issuing it would
+# generate a fresh code and overwrite the stored hash, invalidating the very code the
+# caller just passed in — so the supplied-code path could never have worked with the
+# request left in. That is why the assertion below is conditional rather than
+# unconditional: correctness of the round trip beats one more assertion.
+if [ -n "${SMOKE_CODE:-}" ]; then
+  note "SMOKE_CODE supplied; skipping the known-email request so it is not invalidated"
+  KNOWN_STATUS=204
+else
+  KNOWN_STATUS=$(api_status auth request -X POST -d "{\"email\":\"$EMAIL\"}")
+fi
+# 429 here is the R1 rate limit doing its job — 3 requests per email per 15 minutes — not
+# a defect. It is named explicitly because otherwise a second local run inside 15 minutes
+# looks like auth broke.
+if [ "$KNOWN_STATUS" = "429" ]; then
+  note "rate limited: 3 requests per email per 15 min (R1) — the limit is working"
+  note "to re-run now, either use a different pre-provisioned SMOKE_EMAIL, or clear it:"
+  note "    wrangler kv key delete --local --binding AUTH \"rate:email:$EMAIL\""
+  fail "auth/request rate limited; see above"
+fi
 [ "$KNOWN_STATUS" = "204" ] \
   || fail "auth/request returned $KNOWN_STATUS for a known email, not 204"
-pass "auth/request accepts a known email"
+if [ -n "${SMOKE_CODE:-}" ]; then
+  note "known-email 204 assertion skipped (SMOKE_CODE path)"
+else
+  pass "auth/request accepts a known email"
+fi
 
-# The code is delivered by email and only its sha256 is ever stored, so there is no way to
-# read it back out of the Worker or out of KV. It has to be supplied.
-if [ -z "${SMOKE_CODE:-}" ]; then
+# Getting the code. Three sources, in order of preference:
+#
+#   1. SMOKE_CODE, supplied by whoever ran this.
+#   2. `medatat dev last-code`, which reads the LOCAL emulator's KV and recovers the code
+#      from its sha256 by exhaustive search — a six-digit code has only 1,000,000 possible
+#      values. There is deliberately no Worker endpoint for this: one that returned a live
+#      code would be a credential oracle. Against a deployed Worker this simply fails,
+#      which is the point.
+#   3. Neither, in which case the unauthenticated half still ran and we say so.
+CODE="${SMOKE_CODE:-}"
+if [ -z "$CODE" ]; then
+  CODE="$(medatat dev last-code --email "$EMAIL" 2>/dev/null || true)"
+  [ -n "$CODE" ] && note "recovered the sign-in code from the local emulator"
+fi
+if [ -z "$CODE" ]; then
   note "a sign-in code has been emailed to $EMAIL"
   note "re-run with it to exercise the authenticated half:"
   note "    SMOKE_CODE=<code> $0 $API"
   echo "smoke: unauthenticated checks passed; authenticated checks skipped"
   exit 0
 fi
-CODE="$SMOKE_CODE"
 
 TOK=$(api auth verify -X POST -d "{\"email\":\"$EMAIL\",\"code\":\"$CODE\"}" \
         | jq -r '.data.token // empty')
