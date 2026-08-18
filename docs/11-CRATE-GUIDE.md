@@ -95,7 +95,7 @@ src/
   migrations.rs     versioned, forward-only
   keyring.rs        #[cfg(feature = "phi")] key gen + mode-0600 key file (NOT the OS keychain)
   conn.rs           read conn (UI thread) + write conn (mutex); PRAGMA setup
-  forms.rs          form def load/store (postcard blobs)
+  forms.rs          form + field def load/store (JSON blobs)
   cases.rs          patient_case CRUD, worklist queries
   values.rs         field_value read/write; apply_local
   outbox.rs         enqueue, next_batch, confirm, bump_attempts, drop
@@ -111,7 +111,9 @@ impl Store {
 
     // --- read path: synchronous, UI thread, WAL means it never blocks on a writer ---
     pub fn load_form(&self, form_id: FormId) -> Result<Arc<FormDef>, StoreError>;
-    pub fn load_all_forms(&self) -> Result<FormRegistry, StoreError>;
+    pub fn load_all_forms(&self) -> Result<Vec<Arc<FormDef>>, StoreError>;
+    pub fn save_fields(&self, fields: &[FieldDef]) -> Result<(), StoreError>;  // upsert only
+    pub fn all_fields(&self) -> Result<Vec<FieldDef>, StoreError>;             // placed or not
     pub fn load_case_values(&self, case_id: CaseId)
         -> Result<Vec<(FieldId, Value)>, StoreError>;          // R13 — must be a PK range scan
     pub fn worklist(&self, assignee: &str, q: &WorklistQuery)

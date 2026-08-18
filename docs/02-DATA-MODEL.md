@@ -80,6 +80,27 @@ CREATE TABLE form (
   updated_at TEXT NOT NULL
 );
 
+-- Every field that exists, whether or not a form places it. Mirrors D1's `field` table
+-- and is populated from ConfigDelta::fields.
+--
+-- Rows are never deleted when a field is unplaced. `form.def_blob` can only ever describe
+-- *placed* fields, so without this table unplacing a field erases the client's last route
+-- to it — while its values sit on in `field_value`, referenced by nothing. That is what
+-- makes the builder's "Unplaced fields" drawer survive a restart
+-- ([06-FORM-BUILDER.md](06-FORM-BUILDER.md) acceptance item 9). Archival, if it is ever
+-- wanted, is a flag here rather than a DELETE.
+--
+-- `key` is indexed but not UNIQUE, unlike the D1 table: key uniqueness is the server's
+-- invariant to enforce at the point of change, and a client that also enforced it could
+-- reject a whole inbound batch over a transient collision partway through a rename.
+CREATE TABLE field (
+  field_id   TEXT PRIMARY KEY,
+  key        TEXT NOT NULL,
+  def_blob   BLOB NOT NULL,          -- JSON-encoded medatat_core::FieldDef
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX field_key ON field(key);
+
 CREATE TABLE patient_case (
   case_id    TEXT PRIMARY KEY,
   mrn        TEXT,
