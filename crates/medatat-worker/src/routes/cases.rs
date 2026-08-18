@@ -58,7 +58,7 @@ pub async fn list_cases(req: Request, ctx: RouteContext<()>) -> Result<Response>
             .list_cases(
                 assignee.as_deref(),
                 query_param(&req, "since").as_deref(),
-                effective_limit(query_u32(&req, "limit")),
+                effective_limit(query_u32(&req, "limit")?),
             )
             .await
     }

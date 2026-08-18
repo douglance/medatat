@@ -106,7 +106,13 @@ impl CaseDO {
             Ok(v) => v,
             Err(e) => return fail(e),
         };
-        let since = crate::routes::query_i64(req, "since_rev").map(CaseRev);
+        // The Worker re-serialises an already-parsed value into this URL, so this cannot
+        // be malformed today. It is still propagated rather than defaulted: the default
+        // here is a full case read, and that is not a failure mode to leave on trust.
+        let since = match crate::routes::query_i64(req, "since_rev") {
+            Ok(v) => v.map(CaseRev),
+            Err(e) => return fail(e),
+        };
         let store = SqlCaseStore::read_only(self.sql.clone());
         match handle_get_values(&store, case_id, since) {
             Ok(page) => json(page, 200),

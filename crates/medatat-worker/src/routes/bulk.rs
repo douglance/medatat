@@ -63,7 +63,7 @@ pub async fn export(req: Request, ctx: RouteContext<()>) -> Result<Response> {
             .export_page(
                 form_id,
                 query_param(&req, "cursor").as_deref(),
-                effective_limit(query_u32(&req, "limit")),
+                effective_limit(query_u32(&req, "limit")?),
             )
             .await?;
         let mut out = String::new();

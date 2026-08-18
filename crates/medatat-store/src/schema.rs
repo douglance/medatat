@@ -82,3 +82,32 @@ CREATE TABLE conflict (
 
 CREATE TABLE sync_state (k TEXT PRIMARY KEY, v TEXT);
 "#;
+
+/// Migration 2 — the `field` table.
+///
+/// The client had no mirror of D1's `field` table, so a field existed locally only inside
+/// `form.def_blob`. Unplacing it from every section therefore erased the client's only
+/// route to it: the values stayed safe in `field_value`, keyed by `field_id`, but nothing
+/// referenced them any more and the builder's "Unplaced fields" drawer could not survive a
+/// restart (`docs/06-FORM-BUILDER.md` acceptance item 9).
+pub(crate) const V2: &str = r#"
+-- Every field that exists, whether or not any form places it. Populated from
+-- ConfigDelta::fields.
+--
+-- Rows are never deleted on unplacement. That is the entire point: the row outliving the
+-- placement is what gives the builder a way back to a field, and to the values still
+-- stored against it. Archival, if it is ever wanted, belongs here as a flag, never as a
+-- DELETE.
+--
+-- `key` is indexed but not UNIQUE, unlike the D1 table it mirrors. Key uniqueness is the
+-- server's invariant to enforce at the point of change; a client that also enforced it
+-- could reject a whole inbound batch because two rows collided partway through a rename,
+-- and a mirror that refuses to mirror is worse than one that lags.
+CREATE TABLE field (
+  field_id   TEXT PRIMARY KEY,
+  key        TEXT NOT NULL,
+  def_blob   BLOB NOT NULL,          -- JSON-encoded medatat_core::FieldDef
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX field_key ON field(key);
+"#;

@@ -128,15 +128,16 @@ fn ids(form: &FormDef) -> Vec<FieldId> {
 #[test]
 fn schema_applies_and_reports_its_version() {
     let s = Store::open_in_memory().unwrap();
-    assert_eq!(s.schema_version().unwrap(), 1);
+    assert_eq!(s.schema_version().unwrap(), Store::SCHEMA_VERSION);
 }
 
 #[test]
 fn migrations_are_idempotent_across_reopen() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("m.db");
-    assert_eq!(open_file(&path).unwrap().schema_version().unwrap(), 1);
-    assert_eq!(open_file(&path).unwrap().schema_version().unwrap(), 1);
+    let v = Store::SCHEMA_VERSION;
+    assert_eq!(open_file(&path).unwrap().schema_version().unwrap(), v);
+    assert_eq!(open_file(&path).unwrap().schema_version().unwrap(), v);
 }
 
 #[test]

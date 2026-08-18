@@ -272,6 +272,42 @@ mod tests {
     }
 
     #[test]
+    fn a_malformed_numeric_parameter_is_an_error_not_a_default() {
+        // Every default behind these parsers is more expensive than the request the client
+        // meant: a full config read, a full case read, a default page size. Discarding the
+        // error with `.ok().flatten()` turns "you sent nonsense" into "you sent nothing",
+        // which is why the route layer takes the `Result` and never an `Option`.
+        for q in [
+            "?since_rev=twelve",
+            "?since_rev=1.5",
+            "?since_rev=-",
+            "?since_rev=9x",
+        ] {
+            let err = parse_since_rev(q).unwrap_err();
+            assert_eq!(err.http_status(), 422, "{q} must be a client error");
+        }
+        assert_eq!(
+            parse_i64("?limit=lots", "limit").unwrap_err().http_status(),
+            422
+        );
+        assert_eq!(
+            parse_u32("?limit=lots", "limit").unwrap_err().http_status(),
+            422
+        );
+
+        // Out of range is a client error too, not a silent wrap.
+        assert_eq!(
+            parse_u32("?limit=-1", "limit").unwrap_err().http_status(),
+            422
+        );
+
+        // Absent and empty both mean "not specified", which is a legitimate default.
+        assert_eq!(parse_since_rev("").unwrap(), None);
+        assert_eq!(parse_since_rev("?other=1").unwrap(), None);
+        assert_eq!(parse_i64("?limit=", "limit").unwrap(), None);
+    }
+
+    #[test]
     fn a_storage_error_never_leaks_its_detail() {
         let r = error(LogicError::Storage(
             "SELECT value_text FROM field_value".into(),

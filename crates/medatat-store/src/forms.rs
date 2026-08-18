@@ -1,4 +1,4 @@
-//! Form definitions, stored whole as a JSON blob.
+//! Form and field definitions, stored whole as JSON blobs.
 //!
 //! A form is loaded once and rendered thousands of times, so it is stored whole rather
 //! than normalised into rows: one row read plus one decode, instead of a four-way join
@@ -14,7 +14,7 @@
 //! does matter and the enum is externally tagged.
 
 use crate::error::StoreError;
-use medatat_core::{ConfigRev, FormDef, FormId};
+use medatat_core::{ConfigRev, FieldDef, FormDef, FormId};
 use rusqlite::{Connection, OptionalExtension, params};
 use std::sync::Arc;
 
@@ -68,4 +68,38 @@ fn decode(blob: &[u8]) -> Result<Arc<FormDef>, StoreError> {
     let mut def: FormDef = serde_json::from_slice(blob).map_err(StoreError::form_codec)?;
     def.finalize();
     Ok(Arc::new(def))
+}
+
+// ----------------------------------------------------------------- field defs
+
+/// Upserts field definitions. Never deletes: see the `field` table comment in
+/// `schema.rs` for why unplacement must not remove a row.
+pub(crate) fn save_fields(
+    conn: &Connection,
+    fields: &[FieldDef],
+    now: &str,
+) -> Result<(), StoreError> {
+    let mut stmt = conn.prepare_cached(
+        "INSERT INTO field (field_id, key, def_blob, updated_at) VALUES (?1, ?2, ?3, ?4) \
+         ON CONFLICT(field_id) DO UPDATE SET \
+           key = excluded.key, def_blob = excluded.def_blob, updated_at = excluded.updated_at",
+    )?;
+    for f in fields {
+        let blob = serde_json::to_vec(f).map_err(StoreError::form_codec)?;
+        stmt.execute(params![f.field_id.to_string(), f.key, blob, now])?;
+    }
+    Ok(())
+}
+
+/// Every known field, placed or not, ordered by `key` — the order the builder's drawer
+/// lists them in.
+pub(crate) fn all_fields(conn: &Connection) -> Result<Vec<FieldDef>, StoreError> {
+    let mut stmt = conn.prepare_cached("SELECT def_blob FROM field ORDER BY key")?;
+    let mut rows = stmt.query([])?;
+    let mut out = Vec::new();
+    while let Some(row) = rows.next()? {
+        let blob: Vec<u8> = row.get(0)?;
+        out.push(serde_json::from_slice(&blob).map_err(StoreError::form_codec)?);
+    }
+    Ok(out)
 }

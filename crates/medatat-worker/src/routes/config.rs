@@ -57,7 +57,7 @@ pub async fn get_config(req: Request, ctx: RouteContext<()>) -> Result<Response>
     let result: std::result::Result<Option<ConfigDelta>, LogicError> = async {
         let db = db(&ctx.env)?;
         let current = db.config_rev().await?;
-        if query_i64(&req, "since_rev") == Some(current.0) {
+        if query_i64(&req, "since_rev")? == Some(current.0) {
             return Ok(None);
         }
         db.load_config().await.map(Some)

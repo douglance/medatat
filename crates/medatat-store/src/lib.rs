@@ -12,8 +12,8 @@
 //!    that row is an unsynced local edit.
 //!
 //! Default builds use plain SQLite. `--features phi` switches to SQLCipher with the key
-//! held in the OS keychain; nothing else about the schema or the API changes. See
-//! `docs/12-PHI-READINESS.md`.
+//! in an owner-only file beside the database; nothing else about the schema or the API
+//! changes. See `docs/12-PHI-READINESS.md`.
 
 mod cases;
 mod conflicts;
@@ -36,7 +36,7 @@ pub use outbox::OutboxRow;
 use chrono::{DateTime, SecondsFormat, Utc};
 use conn::Location;
 use medatat_core::{
-    CaseId, CaseRev, ConfigRev, FieldId, FormDef, FormId, Value,
+    CaseId, CaseRev, ConfigRev, FieldDef, FieldId, FormDef, FormId, Value,
     wire::{CaseSummary, ValueRow},
 };
 use rusqlite::{Connection, OptionalExtension, params};
@@ -134,6 +134,10 @@ impl Store {
         self.write.lock().map_err(|_| StoreError::Poisoned)
     }
 
+    /// The schema version this build writes. A database at any lower version is migrated
+    /// forward on open; one at a higher version is [`StoreError::SchemaTooNew`].
+    pub const SCHEMA_VERSION: i64 = migrations::LATEST;
+
     /// The schema version on disk.
     pub fn schema_version(&self) -> Result<i64, StoreError> {
         migrations::read_version(&*self.reader()?)
@@ -151,6 +155,25 @@ impl Store {
 
     pub fn load_all_forms(&self) -> Result<Vec<Arc<FormDef>>, StoreError> {
         forms::load_all(&*self.reader()?)
+    }
+
+    /// Mirrors `ConfigDelta::fields` — every field the server knows about, placed or not.
+    ///
+    /// Upsert only. A field is **never** removed here when it stops being placed: the row
+    /// outliving the placement is the client's only route back to a field it has unplaced,
+    /// and to the values still stored against it in `field_value`.
+    pub fn save_fields(&self, fields: &[FieldDef]) -> Result<(), StoreError> {
+        let mut conn = self.writer()?;
+        let tx = conn.transaction()?;
+        forms::save_fields(&tx, fields, &now())?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Every known field, ordered by `key`. Includes fields no form places, which is what
+    /// lets the builder's "Unplaced fields" drawer survive a restart.
+    pub fn all_fields(&self) -> Result<Vec<FieldDef>, StoreError> {
+        forms::all_fields(&*self.reader()?)
     }
 
     // ----------------------------------------------------------------- cases

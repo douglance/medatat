@@ -129,12 +129,17 @@ pub fn query_param(req: &Request, key: &str) -> Option<String> {
     crate::http::query_value(&raw_query(req), key)
 }
 
-pub fn query_i64(req: &Request, key: &str) -> Option<i64> {
-    crate::http::parse_i64(&raw_query(req), key).ok().flatten()
+/// Numeric query parameters propagate their parse error. They deliberately do **not**
+/// return a bare `Option`: `.ok().flatten()` on a strict parser turns "you sent nonsense"
+/// into "you sent nothing", and every default in this crate — a full config read, a full
+/// case read, a default page size — is more expensive than the request the client meant.
+/// Keeping `Result` in the signature is what stops the next caller from re-introducing it.
+pub fn query_i64(req: &Request, key: &str) -> std::result::Result<Option<i64>, LogicError> {
+    crate::http::parse_i64(&raw_query(req), key)
 }
 
-pub fn query_u32(req: &Request, key: &str) -> Option<u32> {
-    crate::http::parse_u32(&raw_query(req), key).ok().flatten()
+pub fn query_u32(req: &Request, key: &str) -> std::result::Result<Option<u32>, LogicError> {
+    crate::http::parse_u32(&raw_query(req), key)
 }
 
 /// An unparseable `since_rev` is a client error, not a silent full read — a full read

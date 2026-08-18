@@ -181,6 +181,119 @@ fn open_creates_the_directory_it_needs() {
     );
 }
 
+// ------------------------------------------------------------------ fields
+
+/// The regression this table exists to prevent.
+///
+/// Unplacing a field removes only the placement. If the client tracked fields solely
+/// inside `form.def_blob`, rewriting the form without it would erase the client's last
+/// reference to a field whose values are still sitting in `field_value` — and the
+/// builder's "Unplaced fields" drawer would come back empty after a restart
+/// (`docs/06-FORM-BUILDER.md` acceptance item 9).
+#[test]
+fn a_field_placed_in_no_form_is_still_returned() {
+    let (store, def, case_id) = fixture();
+    let f = ids(&def)[0];
+    let all: Vec<FieldDef> = def.iter_fields().map(|sf| (*sf.field).clone()).collect();
+    store.save_fields(&all).expect("save_fields");
+    store
+        .apply_local(case_id, &[(f, Value::Text("kept".into()))], CaseRev(0))
+        .expect("apply_local");
+
+    // The coordinator removes every placement: same form_id, no sections at all.
+    let emptied = FormDef::new(def.form_id, def.name.clone(), vec![]);
+    store.save_form(&emptied, ConfigRev(2)).expect("save_form");
+    assert_eq!(
+        store
+            .load_form(def.form_id)
+            .expect("load_form")
+            .field_count(),
+        0,
+        "the placements really are gone"
+    );
+
+    let fields = store.all_fields().expect("all_fields");
+    assert_eq!(fields.len(), 7, "unplacing must never drop a field row");
+    assert!(fields.iter().any(|d| d.field_id == f));
+    assert_eq!(
+        value_map(store.load_case_values(case_id).expect("load")).get(&f),
+        Some(&Value::Text("kept".into())),
+        "and the values it points at are still there"
+    );
+}
+
+#[test]
+fn fields_round_trip_in_key_order() {
+    let (store, def, _) = fixture();
+    let mut all: Vec<FieldDef> = def.iter_fields().map(|sf| (*sf.field).clone()).collect();
+    // Saved out of order; `all_fields` is what imposes the drawer's ordering.
+    all.reverse();
+    store.save_fields(&all).expect("save_fields");
+
+    let got = store.all_fields().expect("all_fields");
+    let keys: Vec<&str> = got.iter().map(|d| d.key.as_str()).collect();
+    assert_eq!(keys, ["f0", "f1", "f2", "f3", "f4", "f5", "f6"]);
+
+    // Every kind survives the blob, including the option lists.
+    let mut expect: Vec<FieldDef> = all;
+    expect.sort_by(|a, b| a.key.cmp(&b.key));
+    assert_eq!(got, expect);
+}
+
+#[test]
+fn save_fields_upserts_rather_than_duplicating() {
+    let (store, def, _) = fixture();
+    let mut first = (*def.iter_fields().next().expect("a field").field).clone();
+    store.save_fields(&[first.clone()]).expect("save_fields");
+
+    first.key = "renamed".into();
+    store.save_fields(&[first.clone()]).expect("save_fields");
+
+    let got = store.all_fields().expect("all_fields");
+    assert_eq!(got.len(), 1, "same field_id must update, not insert again");
+    assert_eq!(got[0].key, "renamed");
+}
+
+#[test]
+fn empty_save_fields_is_a_no_op() {
+    let (store, _, _) = fixture();
+    store.save_fields(&[]).expect("save_fields");
+    assert!(store.all_fields().expect("all_fields").is_empty());
+}
+
+/// A database written before the `field` table existed must gain it on open, not be
+/// rejected or rebuilt.
+#[test]
+fn a_v1_database_migrates_forward_to_v2() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("medatat.db");
+
+    let store = open_file(&path).expect("open");
+    let def = seven_kind_form();
+    store.save_form(&def, ConfigRev(1)).expect("save_form");
+    // Rewind to what a v1 database on disk looks like.
+    store
+        .exec("DROP TABLE field; DROP INDEX IF EXISTS field_key; DELETE FROM schema_version; INSERT INTO schema_version (version) VALUES (1)")
+        .expect("rewind to v1");
+    drop(store);
+
+    let store = open_file(&path).expect("reopen must migrate, not fail");
+    assert_eq!(store.schema_version().expect("version"), 2);
+    assert!(
+        store.all_fields().expect("all_fields").is_empty(),
+        "the new table starts empty and fills from the next config sync"
+    );
+    assert_eq!(
+        store.load_all_forms().expect("forms").len(),
+        1,
+        "the migration must not disturb existing data"
+    );
+
+    let all: Vec<FieldDef> = def.iter_fields().map(|sf| (*sf.field).clone()).collect();
+    store.save_fields(&all).expect("save_fields");
+    assert_eq!(store.all_fields().expect("all_fields").len(), 7);
+}
+
 #[test]
 fn hot_tables_are_without_rowid() {
     let (store, _, _) = fixture();
