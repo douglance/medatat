@@ -76,7 +76,8 @@ pub(crate) fn next_batch(
 ) -> Result<Vec<OutboxRow>, StoreError> {
     let mut stmt = conn.prepare_cached(
         "SELECT case_id, field_id, value_blob, base_rev, attempts, next_attempt_at, last_error, seq \
-         FROM outbox WHERE next_attempt_at <= ?1 ORDER BY next_attempt_at, seq LIMIT ?2",
+         FROM outbox WHERE next_attempt_at <= ?1 AND rejected IS NULL \
+         ORDER BY next_attempt_at, seq LIMIT ?2",
     )?;
     let mut rows = stmt.query(params![now, limit as i64])?;
     let mut out = Vec::new();
@@ -149,6 +150,41 @@ fn next_seq(conn: &Connection) -> Result<i64, StoreError> {
         })?;
     raw.parse::<i64>()
         .map_err(|_| StoreError::BadId(format!("outbox_seq is not a number: {raw}")))
+}
+
+/// Parks a queued edit the server has permanently refused.
+///
+/// The row stays — losing it would lose the abstractor's value — but it leaves the drain
+/// batch, so a permanently-refused edit stops consuming retries forever and stops inflating
+/// the unsynced count with something no amount of waiting will fix.
+pub(crate) fn reject(
+    conn: &Connection,
+    case_id: CaseId,
+    field_id: FieldId,
+    reason: &str,
+) -> Result<(), StoreError> {
+    conn.prepare_cached("UPDATE outbox SET rejected = ?3 WHERE case_id = ?1 AND field_id = ?2")?
+        .execute(params![case_id.to_string(), field_id.to_string(), reason])?;
+    Ok(())
+}
+
+/// Parked edits, with the reason each was refused.
+pub(crate) fn rejected(conn: &Connection) -> Result<Vec<(CaseId, FieldId, String)>, StoreError> {
+    let mut stmt = conn.prepare_cached(
+        "SELECT case_id, field_id, rejected FROM outbox WHERE rejected IS NOT NULL",
+    )?;
+    let mut rows = stmt.query([])?;
+    let mut out = Vec::new();
+    while let Some(row) = rows.next()? {
+        let c: String = row.get(0)?;
+        let f: String = row.get(1)?;
+        out.push((
+            CaseId::parse(&c).map_err(|_| StoreError::BadId(c))?,
+            FieldId::parse(&f).map_err(|_| StoreError::BadId(f))?,
+            row.get(2)?,
+        ));
+    }
+    Ok(out)
 }
 
 /// The sequence currently queued for a field, if any.

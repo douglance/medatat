@@ -17,6 +17,10 @@ path = "src/main.rs"
 medatat-core  = { workspace = true }
 medatat-store = { workspace = true }
 medatat-sync  = { workspace = true }
+medatat-http  = { workspace = true }
+# `medatat-http` uses `reqwest`, which requires a Tokio reactor. gpui's background executor
+# is not Tokio, so the sync loop runs on its own runtime thread — see `sync.rs`.
+tokio     = { workspace = true }
 gpui           = { workspace = true }
 gpui_platform  = { workspace = true }
 gpui-component = { workspace = true }

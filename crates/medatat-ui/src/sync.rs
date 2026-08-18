@@ -10,13 +10,15 @@
 //! What the user sees of any of this is a count in the footer. Offline is a normal state,
 //! shown quietly; it blocks nothing, because the outbox is durable on disk.
 
-use gpui::{App, Task};
 use medatat_core::ids::CaseId;
 use medatat_core::wire::ValueRow;
+use medatat_http::TokenHolder;
 use medatat_store::Store;
 use medatat_sync::engine::ChangeObserver;
 use medatat_sync::{SyncEngine, SyncState, SyncStatus, Transport};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
+use std::thread::JoinHandle;
 use std::time::Duration;
 
 /// How often the foreground drains inbound sync values.
@@ -80,6 +82,12 @@ const CONFIG_EVERY: Duration = Duration::from_secs(60);
 /// Idle pause when the outbox is empty and `next_delay()` has nothing to say.
 const IDLE_POLL: Duration = Duration::from_secs(2);
 
+/// How often to check whether a new token has arrived while the session is expired.
+const AUTH_WAIT_POLL: Duration = Duration::from_millis(500);
+
+/// Ceiling for the no-progress backoff. A stalled outbox must not keep costing round trips.
+const STALL_BACKOFF_MAX: Duration = Duration::from_secs(60);
+
 /// What the footer needs, read without touching the network.
 ///
 /// `unsynced` comes from [`Store::unsynced_count`] and **not** from the engine's outbox
@@ -139,65 +147,149 @@ fn plural(n: usize) -> &'static str {
     if n == 1 { "" } else { "s" }
 }
 
+/// Stops the sync loop when dropped.
+///
+/// The loop runs on its **own OS thread with its own Tokio runtime**, not on gpui's
+/// background executor. That is forced rather than chosen: `medatat-http` uses `reqwest`,
+/// which panics with "there is no reactor running" unless it is driven by a Tokio reactor,
+/// and gpui's executor is not one. It costs one thread and keeps the architectural rule
+/// intact either way — the UI still never awaits the network, it just waits on a different
+/// executor now.
+pub struct SyncHandle {
+    stop: Arc<AtomicBool>,
+    thread: Option<JoinHandle<()>>,
+}
+
+impl Drop for SyncHandle {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Relaxed);
+        // Not joined: the loop wakes at most one poll interval later and exits on its own.
+        // Blocking a window close on a network timeout would be the wrong trade.
+        drop(self.thread.take());
+    }
+}
+
 /// Starts the background loop and returns its handle.
 ///
-/// Unused in the binary until a `Transport` implementation exists to build a `SyncEngine`
-/// with; the loop itself is covered by `sync_loop_pre_syncs_the_caseload_in_the_background`.
-///
-/// Dropping the returned [`Task`] stops the loop, which is why the caller must hold it —
-/// a detached task would outlive the window it serves.
-#[allow(
-    dead_code,
-    reason = "wired with the transport; see the note on Workspace::_sync_task"
-)]
-pub fn spawn<T: Transport>(engine: SyncEngine<T>, assignee: String, cx: &mut App) -> Task<()> {
-    let executor = cx.background_executor().clone();
-    cx.background_executor().spawn(async move {
-        let mut since_caseload = CASELOAD_EVERY;
-        let mut since_config = CONFIG_EVERY;
+/// Dropping the returned handle stops the loop, which is why the caller must hold it.
+pub fn spawn<T: Transport>(
+    engine: SyncEngine<T>,
+    assignee: String,
+    token: TokenHolder,
+) -> std::io::Result<SyncHandle> {
+    let stop = Arc::new(AtomicBool::new(false));
+    let flag = Arc::clone(&stop);
 
-        loop {
-            // Caseload first and immediately on the first pass: R15's premise is that the
-            // whole assigned caseload is already local before the user opens anything.
-            if since_caseload >= CASELOAD_EVERY {
-                if let Err(e) = engine.sync_caseload(&assignee).await {
-                    log_sync_error("caseload", &e);
+    let thread = std::thread::Builder::new()
+        .name("medatat-sync".into())
+        .spawn(move || {
+            let runtime = match tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+            {
+                Ok(r) => r,
+                Err(e) => {
+                    tracing::error!("could not start the sync runtime: {e}");
+                    return;
                 }
-                since_caseload = Duration::ZERO;
-            }
-            if since_config >= CONFIG_EVERY {
-                if let Err(e) = engine.sync_config().await {
-                    log_sync_error("config", &e);
+            };
+
+            runtime.block_on(async move {
+                let mut since_caseload = CASELOAD_EVERY;
+                let mut since_config = CONFIG_EVERY;
+                let mut stall = Duration::ZERO;
+
+                let status = engine.status();
+
+                while !flag.load(Ordering::Relaxed) {
+                    // An expired session will refuse every request with the same token, so
+                    // retrying on the normal cadence is pure load on a server that has
+                    // already said no. Wait for a *different* token instead — which is what
+                    // the re-auth box sets — and only then try again.
+                    if status.state() == SyncState::NeedsAuth {
+                        let stale = token.get();
+                        while !flag.load(Ordering::Relaxed) && token.get() == stale {
+                            tokio::time::sleep(AUTH_WAIT_POLL).await;
+                        }
+                        // A new token deserves a full refresh, not just a drain.
+                        since_caseload = CASELOAD_EVERY;
+                        since_config = CONFIG_EVERY;
+                        stall = Duration::ZERO;
+                        continue;
+                    }
+
+                    // Caseload first and immediately on the first pass: R15's premise is
+                    // that the whole assigned caseload is local before the user opens
+                    // anything.
+                    //
+                    // The interval only resets on **success**. Resetting after a failure
+                    // would mean an abstractor who was offline when the app started waits
+                    // the full five minutes after reconnecting before their caseload
+                    // arrives — which is precisely the wait R15 exists to eliminate.
+                    if since_caseload >= CASELOAD_EVERY {
+                        match engine.sync_caseload(&assignee).await {
+                            Ok(_) => since_caseload = Duration::ZERO,
+                            Err(e) => log_sync_error("caseload", &e),
+                        }
+                    }
+                    if since_config >= CONFIG_EVERY {
+                        match engine.sync_config().await {
+                            Ok(_) => since_config = Duration::ZERO,
+                            Err(e) => log_sync_error("config", &e),
+                        }
+                    }
+
+                    // One outbox pass. The engine owns conflict handling, per-row backoff,
+                    // and the offline case.
+                    //
+                    // What it does *not* own is the case where a pass makes no progress at
+                    // all. A row the server refuses permanently — a 404 for a case it has
+                    // never heard of — is not retryable, but it stays in the outbox and is
+                    // re-sent on every pass. One pass is a round trip per case, so a stalled
+                    // outbox is a steady stream of requests that can never succeed. Back off
+                    // when nothing moves, and reset the moment something does.
+                    match engine.drain_once().await {
+                        Ok(report) => {
+                            let progressed = report.applied > 0 || report.conflicted > 0;
+                            if progressed || report.remaining == 0 {
+                                stall = Duration::ZERO;
+                            } else if report.offline || report.needs_auth {
+                                // Neither is a refused row: the network is down or the
+                                // session lapsed. Both have their own handling, and backing
+                                // off here would only delay recovery once they clear.
+                                stall = Duration::ZERO;
+                            } else if report.failed > 0 {
+                                stall = (stall * 2).clamp(IDLE_POLL, STALL_BACKOFF_MAX);
+                            }
+                        }
+                        Err(e) => log_sync_error("drain", &e),
+                    }
+
+                    // `next_delay` is the engine's own pacing — respecting it is what keeps
+                    // a failing server from being hammered.
+                    let wait = engine
+                        .next_delay()
+                        .ok()
+                        .flatten()
+                        .unwrap_or(IDLE_POLL)
+                        .clamp(Duration::from_millis(50), IDLE_POLL)
+                        .max(stall);
+
+                    tokio::time::sleep(wait).await;
+                    since_caseload += wait;
+                    since_config += wait;
                 }
-                since_config = Duration::ZERO;
-            }
+            });
+        })?;
 
-            // One outbox pass. The engine owns conflict handling, backoff, and the offline
-            // case, so there is nothing to decide here.
-            match engine.drain_once().await {
-                Ok(_) => {}
-                Err(e) => log_sync_error("drain", &e),
-            }
-
-            // `next_delay` is the engine's own pacing — respecting it is what keeps a
-            // failing server from being hammered.
-            let wait = engine
-                .next_delay()
-                .ok()
-                .flatten()
-                .unwrap_or(IDLE_POLL)
-                .max(Duration::from_millis(50));
-
-            executor.timer(wait).await;
-            since_caseload += wait;
-            since_config += wait;
-        }
+    Ok(SyncHandle {
+        stop,
+        thread: Some(thread),
     })
 }
 
 /// Offline is a normal operating state and is logged as such — an error line for every
 /// poll while a laptop is shut would bury the ones that matter.
-#[allow(dead_code, reason = "called from spawn, which waits on a Transport")]
 fn log_sync_error(what: &str, e: &medatat_sync::SyncError) {
     use medatat_sync::TransportError;
     match e {

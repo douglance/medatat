@@ -80,6 +80,8 @@ pub struct DrainReport {
     pub applied: usize,
     pub conflicted: usize,
     pub failed: usize,
+    /// Permanently refused and parked out of the drain batch — needs a human, not a retry.
+    pub rejected: usize,
     pub remaining: usize,
     pub needs_auth: bool,
     pub offline: bool,
@@ -168,6 +170,24 @@ impl<T: Transport> SyncEngine<T> {
                         TransportError::Unauthorized => {
                             report.needs_auth = true;
                             self.status.set_state(SyncState::NeedsAuth);
+                        }
+                        // A refusal the server will repeat forever is not a transient
+                        // failure. Bumping attempts on a 404 grows the backoff but never
+                        // removes the row, so a case the server will never accept becomes a
+                        // permanent cost and an unsynced count that can never reach zero.
+                        //
+                        // `is_retryable()` already knows the difference; nothing consulted
+                        // it here. Parked rather than dropped: dropping loses the value,
+                        // which is the one thing this design refuses.
+                        other if !other.is_retryable() => {
+                            report.rejected += rows.len();
+                            for r in &rows {
+                                self.store.reject_outbox(
+                                    case_id,
+                                    r.field_id,
+                                    &other.to_string(),
+                                )?;
+                            }
                         }
                         other => {
                             for r in &rows {

@@ -317,6 +317,25 @@ impl Store {
         Ok(n as usize)
     }
 
+    /// Parks an edit the server has permanently refused.
+    ///
+    /// It leaves the drain batch but not the database: dropping it would lose the value,
+    /// and retrying it forever costs a permanently non-zero unsynced count. Parked edits
+    /// are surfaced by [`Store::rejected`] so a human can decide.
+    pub fn reject_outbox(
+        &self,
+        case_id: CaseId,
+        field_id: FieldId,
+        reason: &str,
+    ) -> Result<(), StoreError> {
+        outbox::reject(&*self.writer()?, case_id, field_id, reason)
+    }
+
+    /// Edits the server permanently refused, with the reason for each.
+    pub fn rejected(&self) -> Result<Vec<(CaseId, FieldId, String)>, StoreError> {
+        outbox::rejected(&*self.reader()?)
+    }
+
     pub fn drop_outbox(&self, case_id: CaseId, fields: &[FieldId]) -> Result<(), StoreError> {
         outbox::drop_rows(&*self.writer()?, case_id, fields)
     }

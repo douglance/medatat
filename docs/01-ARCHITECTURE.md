@@ -122,8 +122,15 @@ GPUI splits `ForegroundExecutor` (main thread) and `BackgroundExecutor` (pool).
 - **UI writes** go through a write connection behind a mutex, also synchronously — a
   300-field transaction is under 10 ms, well inside a frame budget at the granularity users
   actually save at.
-- **Sync** runs entirely on `cx.background_executor().spawn(...)`, returning `Task<T>`.
-  Dropping a `Task` cancels it. Nothing async ever appears in the render path.
+- **Sync runs on its own OS thread with its own current-thread Tokio runtime**, not on
+  GPUI's `BackgroundExecutor`. `reqwest` requires a Tokio reactor and GPUI's executor is not
+  one — an eager attempt aborts the process on launch with *"there is no reactor running"*
+  before a single request is made. A `SyncHandle` stops the thread on drop.
+
+  The rule is unchanged and worth restating precisely: **the UI never awaits the network.**
+  "Background executor" here means *a* background executor, not GPUI's. Results return
+  through an `Inbox` that a foreground task drains, so the sync thread never reaches into a
+  view.
 
 ## Security posture
 

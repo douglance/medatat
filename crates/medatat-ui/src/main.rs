@@ -30,6 +30,10 @@ use builder::BuilderView;
 use form::FormView;
 use worklist::WorklistView;
 
+/// Where the Worker lives. Overridable so a developer can point at a local `wrangler dev`
+/// without a rebuild.
+const DEFAULT_API: &str = "http://localhost:8787";
+
 /// Until there is a login screen, every case belongs to this assignee. The real value comes
 /// from the session token; see `docs/05-UI-SPEC.md#login`.
 const DEMO_ASSIGNEE: &str = "demo";
@@ -144,9 +148,18 @@ struct Workspace {
     /// before a `Transport` exists — an abstractor's own unsynced edits are counted from
     /// the moment they are written.
     sync: sync::SyncIndicator,
-    /// The background loop's handle. Dropping it stops the loop, so `Workspace` holds it.
-    /// `None` until there is a `Transport` to construct a `SyncEngine` with.
-    _sync_task: Option<gpui::Task<()>>,
+    /// The sync loop's handle. Dropping it stops the loop, so `Workspace` holds it.
+    /// `None` only if the transport or its runtime thread could not be started.
+    _sync_task: Option<sync::SyncHandle>,
+    /// The session token, replaceable in place. Re-auth after an idle timeout must not
+    /// tear down the engine, because that would take the abstractor's in-memory work with
+    /// it — the failure this whole design exists to prevent.
+    token: medatat_http::TokenHolder,
+    /// The re-auth box, present only while the session is expired. Deliberately a footer
+    /// row rather than a modal: blocking the form would cost the abstractor the work still
+    /// sitting in memory, which is the exact thing `TokenHolder` exists to protect.
+    reauth: Option<widgets::LineInput>,
+    _reauth_sub: Option<gpui::Subscription>,
     /// Inbound values parked by the background loop, drained on the foreground so they go
     /// through `FormView`'s focused-field guard rather than round the side of it.
     inbox: Arc<sync::Inbox>,
@@ -170,6 +183,7 @@ impl Workspace {
         // Inbound sync values land here and are applied on the foreground. A poll, not a
         // wake-up: the background executor must never reach into a view.
         let inbox = Arc::new(sync::Inbox::default());
+        let mut status = Arc::new(medatat_sync::SyncStatus::default());
         let drain_task = cx.spawn(async move |this, cx| {
             loop {
                 cx.background_executor().timer(sync::drain_interval()).await;
@@ -181,6 +195,33 @@ impl Workspace {
                 }
             }
         });
+
+        // Sync runs on the background executor from here on. Nothing below this line is
+        // awaited by the UI; the foreground only ever reads the store.
+        let token = medatat_http::TokenHolder::new(std::env::var("MEDATAT_TOKEN").ok());
+        let api = std::env::var("MEDATAT_API").unwrap_or_else(|_| DEFAULT_API.to_string());
+        let sync_task = match medatat_http::HttpTransport::new(&api, token.clone()) {
+            Ok(transport) => {
+                let engine = medatat_sync::SyncEngine::new(Arc::clone(&store), transport)
+                    .with_observer(inbox.observer());
+                status = engine.status();
+                match sync::spawn(engine, DEMO_ASSIGNEE.to_string(), token.clone()) {
+                    Ok(handle) => {
+                        tracing::info!("syncing against {api}");
+                        Some(handle)
+                    }
+                    Err(e) => {
+                        tracing::error!("could not start the sync thread ({e}); local-only");
+                        None
+                    }
+                }
+            }
+            Err(e) => {
+                // Local editing still works; only the network half is missing.
+                tracing::error!("no transport ({e}); running local-only");
+                None
+            }
+        };
 
         let on_open = Self::on_open_case(cx);
         let s = Arc::clone(&store);
@@ -202,17 +243,52 @@ impl Workspace {
             def,
             message,
             focus,
-            sync: sync::SyncIndicator::new(
-                Arc::new(medatat_sync::SyncStatus::default()),
-                Arc::clone(&store_for_sync),
-            ),
+            sync: sync::SyncIndicator::new(status, Arc::clone(&store_for_sync)),
             // No `Transport` implementation exists yet, so there is no engine to run. The
             // loop itself is written and tested (`sync::spawn`); this is the one line that
             // starts it once a transport lands.
-            _sync_task: None,
+            _sync_task: sync_task,
+            token,
+            reauth: None,
+            _reauth_sub: None,
             inbox,
             _drain_task: drain_task,
         }
+    }
+
+    /// Shows or hides the re-auth box to match the sync state.
+    ///
+    /// Nothing is torn down when the session expires: the engine keeps running, the open
+    /// case keeps its in-memory state, and a new token simply replaces the old one in place.
+    fn sync_reauth_prompt(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let needed = self.sync.state() == medatat_sync::SyncState::NeedsAuth;
+        if needed == self.reauth.is_some() {
+            return;
+        }
+        if !needed {
+            self.reauth = None;
+            self._reauth_sub = None;
+            cx.notify();
+            return;
+        }
+        let input = widgets::LineInput::new("Paste session token", window, cx);
+        let token = self.token.clone();
+        self._reauth_sub =
+            Some(
+                input.subscribe_commit(window, cx, move |this: &mut Workspace, text, _, cx| {
+                    let t = text.trim();
+                    if t.is_empty() {
+                        return;
+                    }
+                    // The engine picks this up on its next request; nothing restarts.
+                    token.set(Some(t.to_string()));
+                    this.reauth = None;
+                    this._reauth_sub = None;
+                    cx.notify();
+                }),
+            );
+        self.reauth = Some(input);
+        cx.notify();
     }
 
     /// Applies whatever the background loop parked, to the open case only.
@@ -382,7 +458,7 @@ impl Workspace {
 #[cfg(feature = "demo")]
 fn seed_cases(store: &Store, def: &Arc<FormDef>) -> Result<()> {
     use medatat_core::CaseRev;
-    use medatat_core::wire::CaseSummary;
+    use medatat_core::wire::{CaseSummary, ValueRow};
     use medatat_testkit::{synthetic_case, synthetic_mrn};
 
     for n in 1..=50u64 {
@@ -398,12 +474,23 @@ fn seed_cases(store: &Store, def: &Arc<FormDef>) -> Result<()> {
         })?;
         // Values too, so the worklist's `filled / total` column shows a real spread rather
         // than 50 identical zeroes.
+        //
+        // Seeded as **server** values, not local edits. `apply_local` would queue an outbox
+        // row per value, and demo cases do not exist on any server — so against a real
+        // Worker the loop would spend forever pushing rows that can only ever 404.
         if n % 3 != 0 {
-            let values: Vec<_> = synthetic_case(def, n)
+            let rows: Vec<ValueRow> = synthetic_case(def, n)
                 .into_iter()
                 .take(if n % 2 == 0 { def.field_count() } else { 2 })
+                .map(|(field_id, value)| ValueRow {
+                    field_id,
+                    value,
+                    rev: CaseRev::ZERO,
+                    updated_by: None,
+                    updated_at: None,
+                })
                 .collect();
-            store.apply_local(case_id, &values, CaseRev::ZERO)?;
+            store.apply_server_values(case_id, &rows, CaseRev::ZERO)?;
         }
     }
     Ok(())
@@ -415,7 +502,11 @@ fn seed_cases(_: &Store, _: &Arc<FormDef>) -> Result<()> {
 }
 
 impl Render for Workspace {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // The prompt follows the sync state rather than being pushed by it, so a session
+        // that expires while the window is idle still surfaces.
+        self.sync_reauth_prompt(window, cx);
+
         v_flex()
             .track_focus(&self.focus)
             .capture_key_down(cx.listener(Self::on_key))
@@ -432,6 +523,15 @@ impl Render for Workspace {
                             .when(self.form.is_none(), |d| d.child(self.worklist.clone()))
                     }),
             )
+            .children(self.reauth.as_ref().map(|input| {
+                h_flex()
+                    .w_full()
+                    .gap_2()
+                    .px_4()
+                    .py_1()
+                    .child(SharedString::from("Session expired — sync is paused:"))
+                    .child(div().w(px(320.)).child(widgets::render_filter(input)))
+            }))
             .child(
                 // The permitted status surface: peripheral chrome, never over content.
                 h_flex()

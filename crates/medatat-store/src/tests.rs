@@ -268,22 +268,24 @@ fn a_v1_database_migrates_forward_to_latest() {
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join("medatat.db");
 
-    let store = open_file(&path).expect("open");
+    // Build a genuine v1 database rather than rewinding a current one by undoing each
+    // migration in turn. That approach broke twice — once when v3 added `outbox.seq` and
+    // again when v4 added `outbox.rejected` — because every new migration silently made the
+    // rewind partial, and a partial rewind proves less than the test claims while still
+    // passing. Applying V1 to an empty file cannot drift.
+    {
+        let conn = rusqlite::Connection::open(&path).expect("create v1");
+        conn.execute_batch(super::schema::V1).expect("apply V1");
+        conn.execute("INSERT INTO schema_version (version) VALUES (1)", [])
+            .expect("stamp v1");
+    }
+
+    // Write through the v1 schema, so the migration has real data to preserve.
     let def = seven_kind_form();
-    store.save_form(&def, ConfigRev(1)).expect("save_form");
-    // Rewind to what a v1 database on disk looks like: no `field` table (v2) and no
-    // `outbox.seq` (v3). Every later migration must be undone here, or the rewind is
-    // partial and the test proves less than it claims.
-    store
-        .exec(
-            "DROP TABLE field; \
-             DROP INDEX IF EXISTS field_key; \
-             ALTER TABLE outbox DROP COLUMN seq; \
-             DELETE FROM schema_version; \
-             INSERT INTO schema_version (version) VALUES (1)",
-        )
-        .expect("rewind to v1");
-    drop(store);
+    {
+        let store = open_file(&path).expect("open v1");
+        store.save_form(&def, ConfigRev(1)).expect("save_form");
+    }
 
     let store = open_file(&path).expect("reopen must migrate, not fail");
     assert_eq!(

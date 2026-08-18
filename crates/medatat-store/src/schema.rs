@@ -125,3 +125,17 @@ CREATE INDEX field_key ON field(key);
 pub(crate) const V3: &str = r#"
 ALTER TABLE outbox ADD COLUMN seq INTEGER NOT NULL DEFAULT 0;
 "#;
+
+/// V4 — park permanently-refused edits instead of retrying them forever.
+///
+/// `drain_once` treated a non-retryable `Server{404}` exactly like a transient failure:
+/// bump attempts, leave the row queued. Per-row backoff grows, but the row never leaves, so
+/// a case the server will never accept becomes a permanent cost and an "N unsynced" count
+/// that never reaches zero.
+///
+/// Dropping the row would lose data, which is the one thing this design refuses. So it is
+/// parked: excluded from the drain batch, still readable, still counted separately, and
+/// surfaceable to the user who is the only one who can decide what to do about it.
+pub(crate) const V4: &str = r#"
+ALTER TABLE outbox ADD COLUMN rejected TEXT;
+"#;

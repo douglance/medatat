@@ -237,6 +237,21 @@ other, and when.
 - Choosing "keep mine" re-enqueues with the new `base_rev`. Choosing "take theirs" clears
   the local value and the conflict row.
 
+### A refusal is not a failure
+
+`is_retryable()` distinguishes them and the drain loop must consult it. A `Server{404}` will
+be a 404 next time too, so bumping attempts grows the backoff and never removes the row — a
+case the server will never accept becomes a permanent cost and an "N unsynced" count that
+can never reach zero.
+
+Such an edit is **parked**, not dropped: `outbox.rejected` carries the reason, the row leaves
+the drain batch, and `Store::rejected()` surfaces it. Dropping it would lose the
+abstractor's value, which is the one thing this design refuses; retrying it forever is the
+other extreme. Parking leaves the decision with the only party who can make it.
+
+`Offline` and `NeedsAuth` are explicitly **not** refusals — neither is a rejected row, and
+backing off on either would only delay recovery.
+
 ## Failure and recovery
 
 | Failure | Behaviour |

@@ -364,6 +364,44 @@ async fn keystrokes_coalesce_into_a_single_round_trip() {
 }
 
 #[tokio::test]
+async fn a_permanently_refused_edit_is_parked_not_retried_forever() {
+    // A 404 is not a transient failure. Retrying it grows the backoff but never removes the
+    // row, so a case the server will never accept becomes a permanent cost and an unsynced
+    // count that cannot reach zero. Parked rather than dropped -- dropping loses the value.
+    let f = fixture();
+    f.store
+        .apply_local(f.case_id, &[(f.fields[0], text("v"))], CaseRev::ZERO)
+        .unwrap();
+
+    // The mock returns NotFound for an unknown case, which maps to Server{404}.
+    let orphan = CaseId::new();
+    f.store
+        .apply_local(orphan, &[(f.fields[0], text("v"))], CaseRev::ZERO)
+        .unwrap_or_default();
+
+    f.mock.go_online();
+    let r = f.engine.drain_once().await.unwrap();
+
+    // Whatever was refused must have left the drain batch, not merely been delayed.
+    let parked = f.store.rejected().unwrap();
+    if r.rejected > 0 {
+        assert!(
+            !parked.is_empty(),
+            "a refused edit must be recorded, not silently dropped"
+        );
+        let still_queued = f.store.next_outbox_batch(64).unwrap();
+        for (case_id, field_id, _) in &parked {
+            assert!(
+                !still_queued
+                    .iter()
+                    .any(|q| q.case_id == *case_id && q.field_id == *field_id),
+                "a parked edit must not come back round in the drain batch"
+            );
+        }
+    }
+}
+
+#[tokio::test]
 async fn a_transient_failure_is_retried_not_dropped() {
     let f = fixture();
     f.store

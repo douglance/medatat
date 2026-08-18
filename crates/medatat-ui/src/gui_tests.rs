@@ -631,8 +631,8 @@ mod mock_transport {
 ///
 /// R15 rests on the caseload being local before the user opens anything, so "it syncs
 /// eventually" is not the property — "it has already synced" is.
-#[gpui::test]
-fn sync_loop_pre_syncs_the_caseload_in_the_background(cx: &mut TestAppContext) {
+#[test]
+fn sync_loop_pre_syncs_the_caseload_in_the_background() {
     use medatat_sync::SyncEngine;
     use medatat_testkit::MockTransport;
 
@@ -643,8 +643,11 @@ fn sync_loop_pre_syncs_the_caseload_in_the_background(cx: &mut TestAppContext) {
         mock_transport::Adapter(Arc::clone(&mock)),
     );
 
-    let _task = cx.update(|cx| crate::sync::spawn(engine, "demo".into(), cx));
-    cx.run_until_parked();
+    let _handle = crate::sync::spawn(engine, "demo".into(), medatat_http::TokenHolder::default())
+        .expect("sync thread");
+    // The loop runs on its own OS thread with its own Tokio runtime, so this waits on real
+    // time rather than the test clock — see the note on `SyncHandle`.
+    wait_for(|| !mock.calls().is_empty());
 
     let calls = mock.calls();
     assert!(
@@ -658,8 +661,8 @@ fn sync_loop_pre_syncs_the_caseload_in_the_background(cx: &mut TestAppContext) {
 }
 
 /// Offline is a normal state: the loop keeps running and nothing blocks.
-#[gpui::test]
-fn sync_loop_survives_being_offline(cx: &mut TestAppContext) {
+#[test]
+fn sync_loop_survives_being_offline() {
     use medatat_sync::SyncEngine;
     use medatat_testkit::MockTransport;
 
@@ -671,24 +674,19 @@ fn sync_loop_survives_being_offline(cx: &mut TestAppContext) {
         mock_transport::Adapter(Arc::clone(&mock)),
     );
 
-    let _task = cx.update(|cx| crate::sync::spawn(engine, "demo".into(), cx));
-    cx.run_until_parked();
+    let _handle = crate::sync::spawn(engine, "demo".into(), medatat_http::TokenHolder::default())
+        .expect("sync thread");
 
     // It tried, it failed, it did not panic and did not stop.
     assert!(
-        !mock.calls().is_empty(),
+        wait_for(|| !mock.calls().is_empty()),
         "the loop still attempts while offline"
     );
 
     mock.go_online();
     mock.clear_calls();
-    // Far enough to pass every interval in the loop.
-    cx.executor()
-        .advance_clock(std::time::Duration::from_secs(6 * 60));
-    cx.run_until_parked();
-
     assert!(
-        !mock.calls().is_empty(),
+        wait_for(|| !mock.calls().is_empty()),
         "coming back online resumes without a restart"
     );
 }
@@ -880,4 +878,16 @@ fn r8_tabbing_out_of_a_time_field_canonicalises_it(cx: &mut TestAppContext) {
         text, "09:00",
         "tabbing out canonicalises, as blur and Enter do"
     );
+}
+
+/// Polls a condition for up to two seconds. The sync loop runs on a real thread, so its
+/// tests wait on wall-clock rather than gpui's test executor.
+fn wait_for(mut done: impl FnMut() -> bool) -> bool {
+    for _ in 0..200 {
+        if done() {
+            return true;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    false
 }
