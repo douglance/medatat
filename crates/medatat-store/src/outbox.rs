@@ -37,12 +37,19 @@ pub(crate) fn enqueue(
     // `base_rev` is deliberately *not* refreshed on conflict. It records the server rev
     // the edit chain for this field started from, which is what per-field conflict
     // detection compares against; advancing it here would hide a genuine same-field race.
-    // `seq` advances past whatever is there, so a row re-enqueued while its previous
-    // value is in flight cannot be confirmed away by the response to that older send.
+    // `seq` comes from a persisted counter, NOT from `MAX(seq)` over the table.
+    //
+    // Deriving it from surviving rows restarts at 1 whenever the outbox drains, which
+    // reopens the lost-update window through a narrower door: send F(seq=1), the response
+    // is lost and the batch is retried, the first response confirms and deletes the row,
+    // the abstractor edits F again and gets seq=1 a second time — and the duplicate
+    // `Applied` from the retry then matches the *new* row and drops it. Needs at-least-once
+    // delivery to trigger rather than just a keystroke, but the retry path is exactly where
+    // duplicate responses come from, and the symptom is identical and just as quiet.
+    let seq = next_seq(conn)?;
     conn.prepare_cached(
         "INSERT INTO outbox (case_id, field_id, value_blob, base_rev, attempts, next_attempt_at, seq) \
-         VALUES (?1, ?2, ?3, ?4, 0, ?5, \
-                 COALESCE((SELECT MAX(seq) FROM outbox), 0) + 1) \
+         VALUES (?1, ?2, ?3, ?4, 0, ?5, ?6) \
          ON CONFLICT(case_id, field_id) DO UPDATE SET \
            value_blob = excluded.value_blob, \
            attempts = 0, \
@@ -55,7 +62,8 @@ pub(crate) fn enqueue(
         field_id.to_string(),
         blob,
         base_rev.0,
-        now
+        now,
+        seq
     ])?;
     Ok(())
 }
@@ -68,7 +76,7 @@ pub(crate) fn next_batch(
 ) -> Result<Vec<OutboxRow>, StoreError> {
     let mut stmt = conn.prepare_cached(
         "SELECT case_id, field_id, value_blob, base_rev, attempts, next_attempt_at, last_error, seq \
-         FROM outbox WHERE next_attempt_at <= ?1 ORDER BY next_attempt_at LIMIT ?2",
+         FROM outbox WHERE next_attempt_at <= ?1 ORDER BY next_attempt_at, seq LIMIT ?2",
     )?;
     let mut rows = stmt.query(params![now, limit as i64])?;
     let mut out = Vec::new();
@@ -122,6 +130,25 @@ pub(crate) fn drop_rows_at_seq(
         dropped += stmt.execute(params![case_id.to_string(), field_id.to_string(), seq])?;
     }
     Ok(dropped)
+}
+
+/// Allocates the next outbox sequence from a counter that survives the table emptying.
+///
+/// Lives in `sync_state` so it shares the caller's transaction — the sequence must advance
+/// atomically with the row that uses it, or a crash between the two could hand the same
+/// number out twice.
+fn next_seq(conn: &Connection) -> Result<i64, StoreError> {
+    conn.execute(
+        "INSERT INTO sync_state (k, v) VALUES ('outbox_seq', '1') \
+         ON CONFLICT(k) DO UPDATE SET v = CAST(sync_state.v AS INTEGER) + 1",
+        [],
+    )?;
+    let raw: String =
+        conn.query_row("SELECT v FROM sync_state WHERE k = 'outbox_seq'", [], |r| {
+            r.get(0)
+        })?;
+    raw.parse::<i64>()
+        .map_err(|_| StoreError::BadId(format!("outbox_seq is not a number: {raw}")))
 }
 
 /// The sequence currently queued for a field, if any.

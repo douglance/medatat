@@ -646,6 +646,33 @@ fn apply_server_values_never_clobbers_a_pending_row() {
 }
 
 #[test]
+fn seq_is_never_reused_after_the_outbox_drains() {
+    // Deriving seq from MAX over surviving rows restarts it at 1 whenever the outbox
+    // empties, which reopens the lost-update window: a duplicate `Applied` from a retried
+    // batch would carry the old seq, match the NEW row, and drop it silently.
+    let (store, def, case_id) = fixture();
+    let f = ids(&def);
+
+    store
+        .apply_local(case_id, &[(f[0], Value::Text("v1".into()))], CaseRev(0))
+        .expect("apply v1");
+    let first = store.next_outbox_batch(64).expect("batch")[0].seq;
+    store
+        .confirm(case_id, &[(f[0], first)], CaseRev(1))
+        .expect("confirm");
+    assert!(store.next_outbox_batch(64).expect("batch").is_empty());
+
+    store
+        .apply_local(case_id, &[(f[0], Value::Text("v2".into()))], CaseRev(1))
+        .expect("apply v2");
+    let second = store.next_outbox_batch(64).expect("batch")[0].seq;
+    assert_ne!(
+        first, second,
+        "a stale confirm carrying the old seq would drop this row"
+    );
+}
+
+#[test]
 fn confirm_leaves_a_row_that_was_re_enqueued_while_in_flight() {
     // Confirming an older send must not delete the newer value that replaced it, nor
     // clear `pending` on it. Without the sequence check both happened, and the newer value
