@@ -241,7 +241,7 @@ product feature.
 | `Ctrl-Enter` | Advance out of a textarea |
 | `Cmd/Ctrl-F` | Field-search palette: fuzzy-match labels, expand section, scroll, focus |
 | `Alt-Up` / `Alt-Down` | Previous / next section |
-| `Alt-Left` / `Alt-Right` | Collapse / expand section |
+| `Cmd/Ctrl-[` / `Cmd/Ctrl-]` | Collapse / expand section |
 | `Cmd/Ctrl-J` / `Cmd/Ctrl-K` | Previous / next case in the worklist |
 | `Up` / `Down` | Radio group cycling; time field ±1 minute |
 | type-ahead | Select dropdowns jump by first letters |
@@ -258,6 +258,19 @@ product feature.
   but was not taken: the sign convention could not be verified on a locked screen, and a
   wrong guess scrolls the wrong way undetectably. Revisit when someone can see the result.
 - **Always-visible high-contrast focus ring.** A keyboard user must never guess where they are.
+- **Any view that handles keys must take focus when it opens.** Found three times, in three
+  different views: the handler is correct, the binding is correct, and nothing happens
+  because no element in that view holds focus, so key events never enter its dispatch tree
+  at all. The user must click something first, and a keyboard-only abstractor never does.
+  It is invisible to review — every piece is right except the wiring above them — and it is
+  only catchable by dispatching a key. Assume any view without a `#[gpui::test]` that
+  presses a key into it has this bug.
+- **`Alt-Left` / `Alt-Right` are unusable on macOS and must not be bound.** macOS claims
+  option+arrow for move-by-word and consumes it before element dispatch runs, so a handler
+  never sees it when focus is inside a text input — which, after `Tab`, is where focus
+  always is. `capture_key_down` does not help; the event never enters the tree. Collapse and
+  expand are therefore bound to `Cmd/Ctrl-[` and `Cmd/Ctrl-]`, which no platform reserves
+  for text editing. `Alt-Up`/`Alt-Down` are unaffected and stay.
 - **Every focus move expands its containing section first.** Tab, `Alt-Up`/`Down`, and a
   palette pick all route through one `reveal_field`. Focusing into a collapsed section would
   otherwise put the caret where nothing is drawn.

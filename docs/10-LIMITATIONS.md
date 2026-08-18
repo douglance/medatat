@@ -136,6 +136,17 @@ renegotiating. See [04-SYNC.md](04-SYNC.md#caseload-pre-sync).
 
 ---
 
+### 10. Keyboard evidence is macOS-only
+
+The 14 `#[gpui::test]` cases dispatch real keystrokes and have caught three genuine focus
+bugs, but they prove one dispatch tree on one platform. Key routing is demonstrably
+platform-specific — `Alt-Left`/`Alt-Right` reach a handler on some focus states and not
+others on macOS specifically, because the OS consumes them first. The same suite on Windows
+or Linux could plausibly produce a different set of passes, and neither has been built.
+
+**Do not read green here as green everywhere.** The suite costs ~1.1 s, so running it on the
+other two platforms is cheap the moment they build at all.
+
 ## Risks
 
 Ordered by expected cost × probability.
