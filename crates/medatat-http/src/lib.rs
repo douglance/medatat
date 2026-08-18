@@ -14,7 +14,7 @@ use medatat_core::wire::{
     CasePage, CaseQuery, ConfigDelta, Envelope, ErrorCode, PutValuesReq, PutValuesResp, ValuePage,
 };
 use medatat_sync::{Transport, TransportError};
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, OnceLock, RwLock};
 use std::time::Duration;
 
 /// A session token that can be replaced without rebuilding the client — a re-auth after an
@@ -36,22 +36,35 @@ impl TokenHolder {
 
 pub struct HttpTransport {
     base: String,
-    client: reqwest::Client,
+    /// Built on first use, not in `new`.
+    ///
+    /// `reqwest`'s client construction needs a live Tokio reactor, and the desktop app
+    /// builds this from GPUI's executor, which is not Tokio — so an eager client panics
+    /// with "there is no reactor running" the moment a `#[gpui::test]` constructs the app.
+    /// Deferring means construction is inert and the reactor is only required where a
+    /// request actually happens, which is inside the sync task.
+    client: OnceLock<reqwest::Client>,
     token: TokenHolder,
 }
 
 impl HttpTransport {
+    /// Infallible and inert: no network, no reactor, nothing allocated that needs one.
     pub fn new(base: impl Into<String>, token: TokenHolder) -> Result<Self, TransportError> {
-        let client = reqwest::Client::builder()
-            // A hung request must not stall the drain loop indefinitely; the loop's own
-            // backoff is the retry policy, not a socket that never closes.
-            .timeout(Duration::from_secs(30))
-            .build()
-            .map_err(|e| TransportError::Malformed(e.to_string()))?;
         Ok(HttpTransport {
             base: base.into().trim_end_matches('/').to_string(),
-            client,
+            client: OnceLock::new(),
             token,
+        })
+    }
+
+    fn client(&self) -> &reqwest::Client {
+        self.client.get_or_init(|| {
+            reqwest::Client::builder()
+                // A hung request must not stall the drain loop indefinitely; the loop's own
+                // backoff is the retry policy, not a socket that never closes.
+                .timeout(Duration::from_secs(30))
+                .build()
+                .unwrap_or_default()
         })
     }
 
@@ -66,7 +79,7 @@ impl HttpTransport {
         body: Option<&(impl serde::Serialize + ?Sized)>,
     ) -> Result<Option<T>, TransportError> {
         let mut req = self
-            .client
+            .client()
             .request(method, format!("{}{}", self.base, path));
         if let Some(t) = self.token.get() {
             req = req.bearer_auth(t);
@@ -170,7 +183,7 @@ impl Transport for HttpTransport {
         // is decoded from the error envelope rather than surfaced as TransportError.
         let path = format!("/cases/{case_id}/values");
         let mut r = self
-            .client
+            .client()
             .post(format!("{}{}", self.base, path))
             .json(&req);
         if let Some(t) = self.token.get() {
@@ -253,6 +266,15 @@ mod tests {
             TransportError::Server { status, .. } => assert_eq!(status, 503),
             other => panic!("expected Server, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn construction_needs_no_tokio_reactor() {
+        // The desktop app builds this from GPUI's executor, which is not Tokio. An eager
+        // reqwest client panics with "there is no reactor running" and takes every
+        // #[gpui::test] that constructs the app down with it.
+        let t = HttpTransport::new("http://x", TokenHolder::default());
+        assert!(t.is_ok());
     }
 
     #[test]
