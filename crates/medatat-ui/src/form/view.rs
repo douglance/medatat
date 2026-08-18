@@ -15,7 +15,8 @@
 //! anywhere below. Widget events arrive already translated as `widgets::WidgetChange`.
 
 use crate::form::palette::FieldPalette;
-use crate::widgets::{self, OnChoose, OnPick, WidgetChange, WidgetState, time_input};
+use crate::mode::{RenderMode, Selection};
+use crate::widgets::{self, OnChoose, OnPick, OnSelectField, WidgetChange, WidgetState, time_input};
 use gpui::{
     AppContext as _, Context, Entity, FocusHandle, InteractiveElement as _, IntoElement,
     KeyDownEvent, ParentElement as _, Render, ScrollHandle, SharedString,
@@ -49,6 +50,11 @@ pub struct FormView {
     palette: Option<Entity<FieldPalette>>,
     /// Scroll position of the section list, used for scroll-into-view on focus.
     scroll: ScrollHandle,
+    /// Runtime or design. The element tree is the same either way — see `mode.rs`.
+    mode: RenderMode,
+    /// Called when a design-mode click selects a field, so the builder's inspector can
+    /// follow along. `None` in runtime, where clicks focus instead of selecting.
+    on_select: Option<OnSelectField>,
 }
 
 impl FormView {
@@ -98,6 +104,31 @@ impl FormView {
             dirty_since_flush: false,
             palette: None,
             scroll: ScrollHandle::new(),
+            mode: RenderMode::Runtime,
+            on_select: None,
+        }
+    }
+
+    /// Switches between the abstractor's view and the builder canvas. Same renderer.
+    pub fn set_mode(&mut self, mode: RenderMode, cx: &mut Context<Self>) {
+        self.mode = mode;
+        cx.notify();
+    }
+
+    pub fn mode(&self) -> RenderMode {
+        self.mode
+    }
+
+    /// Installs the builder's selection callback.
+    pub fn set_on_select(&mut self, on_select: OnSelectField) {
+        self.on_select = Some(on_select);
+    }
+
+    /// Moves the design-mode selection without disturbing anything else.
+    pub fn select(&mut self, selection: Option<Selection>, cx: &mut Context<Self>) {
+        if self.mode.is_design() {
+            self.mode = RenderMode::Design { selected: selection };
+            cx.notify();
         }
     }
 
@@ -266,6 +297,13 @@ impl FormView {
     /// `up`/`down` to `MoveUp`/`MoveDown` in its own key context, so a bubble-phase handler
     /// would never see those keys at all.
     fn on_key(&mut self, ev: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        // Design mode has no caret to move: the widgets are non-interactive, so focus
+        // traversal and field editing keys would be meaningless. The builder owns the
+        // keyboard there (reordering, selection) and handles it above this view.
+        if self.mode.is_design() {
+            return;
+        }
+
         let mods = &ev.keystroke.modifiers;
         let key = ev.keystroke.key.as_str();
 
@@ -602,6 +640,11 @@ impl Render for FormView {
         let width = f32::from(window.viewport_size().width);
         let def = Arc::clone(self.inst.def());
         let on_pick = self.on_pick(cx);
+        let mode = self.mode;
+        let on_select = self
+            .on_select
+            .clone()
+            .unwrap_or_else(|| Rc::new(|_, _, _| {}));
 
         let sections = def.sections.iter().enumerate().map(|(i, section)| {
             let cols = effective_columns(section.columns, width);
@@ -638,6 +681,8 @@ impl Render for FormView {
                             &self.widgets[sf.idx.as_usize()],
                             selected.as_deref(),
                             &on_pick,
+                            mode,
+                            &on_select,
                             cx,
                         )
                     })

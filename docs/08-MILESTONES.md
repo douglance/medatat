@@ -164,13 +164,31 @@ The full acceptance script in
 - [ ] Worklist renders from local SQLite; sort and filter are client-side and instant.
 - [ ] Caseload pre-sync runs on login and every 5 minutes, in worklist order.
 - [ ] Sync progress appears only as a footer status line — never a spinner or overlay (R15).
-- [ ] Every keybinding in [05](05-UI-SPEC.md#keyboard-model) works.
+- [~] Every keybinding in [05](05-UI-SPEC.md#keyboard-model) is **implemented**, but none
+      has been verified by execution — see the note below.
 - [ ] `Cmd/Ctrl-F` field search expands, scrolls, and focuses.
 - [ ] Focus never lands on a collapsed section's fields.
 - [ ] Inbound sync never overwrites the focused field (deferred merge on blur).
 - [ ] A full keyboard-only pass through a 300-field form, on all three OSes.
 
 ---
+
+### A standing caveat on M6
+
+Everything keyboard in M6 is implemented and reasoned through, and **none of it has ever
+been pressed.** The machine running the build has a locked screen, so `Tab`, `Cmd-F`, and
+time-field keystrokes are verified by construction plus pure-function tests, not at runtime.
+
+Three things specifically remain unproven: that capture-phase interception actually beats
+`InputState`'s own key context (it binds `tab` → `IndentInline` and `up`/`down` →
+`MoveUp`/`MoveDown`, so bubble-phase handlers never see them); that
+`InputState::validate` rejects a keystroke the way its source reads; and that focus lands
+where `focus_step` sends it.
+
+The cross-platform CI job will not catch these either — it builds, it does not drive a UI.
+**Do not mark M6 done on construction evidence alone.** The last exit criterion — a full
+keyboard-only pass through a 300-field form on all three OSes — is exactly the thing that
+would close the gap, and it needs a human at an unlocked screen.
 
 ## M7 — Scale run
 

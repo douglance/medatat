@@ -23,6 +23,7 @@ use gpui_component::radio::{Radio, RadioGroup};
 use gpui_component::searchable_list::SearchableListItem;
 use gpui_component::select::{Select, SelectEvent, SelectState};
 use gpui_component::{ActiveTheme as _, IndexPath, Root, v_flex};
+use crate::mode::RenderMode;
 use medatat_core::{FieldIdx, WidgetKind, WidgetSpec, format_date, parse_date};
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -378,6 +379,10 @@ pub fn render_palette(
 /// What the palette calls when a field is chosen.
 pub type OnChoose = Rc<dyn Fn(FieldIdx, &mut Window, &mut App)>;
 
+/// What a click on a field in design mode calls. Same shape as [`OnChoose`], different
+/// meaning: this one selects for the inspector rather than moving focus.
+pub type OnSelectField = Rc<dyn Fn(FieldIdx, &mut Window, &mut App)>;
+
 /// R8 separator half: insert the `:` after the third digit, and only there.
 ///
 /// Runs on change rather than on key-down because `validate` cannot rewrite text. Delegates
@@ -434,6 +439,8 @@ pub fn render_field(
     state: &WidgetState,
     selected: Option<&str>,
     on_pick: &OnPick,
+    mode: RenderMode,
+    on_select: &OnSelectField,
     cx: &App,
 ) -> Field {
     let mut f = field()
@@ -445,7 +452,7 @@ pub fn render_field(
         f = f.description(SharedString::from(err.to_string()));
     }
 
-    f.child(match (spec.kind, state) {
+    let widget = match (spec.kind, state) {
         (WidgetKind::Numeric, WidgetState::Input(e)) => NumberInput::new(e).into_any_element(),
         (WidgetKind::Time, WidgetState::Input(e)) => render_time(e),
         (_, WidgetState::Input(e)) => Input::new(e).into_any_element(),
@@ -459,7 +466,54 @@ pub fn render_field(
             .cleanable(true)
             .into_any_element(),
         (_, WidgetState::Radio(h)) => render_radio(spec, selected, on_pick, h, cx),
-    })
+    };
+
+    match mode {
+        RenderMode::Runtime => f.child(widget),
+        RenderMode::Design { .. } => {
+            f.child(design_chrome(widget, spec.idx, mode, on_select, cx))
+        }
+    }
+}
+
+/// Design-mode chrome around an otherwise identical widget.
+///
+/// One overlay does both jobs the spec asks of design mode: it swallows every mouse event,
+/// which is what "widgets render but are non-interactive" means in practice, and it turns a
+/// click into a selection rather than a focus. The widget underneath is byte-for-byte the
+/// element the runtime renders.
+fn design_chrome(
+    widget: AnyElement,
+    idx: FieldIdx,
+    mode: RenderMode,
+    on_select: &OnSelectField,
+    cx: &App,
+) -> AnyElement {
+    let select = on_select.clone();
+    let border = if mode.selects_field(idx) {
+        cx.theme().ring
+    } else {
+        gpui::transparent_black()
+    };
+
+    div()
+        .relative()
+        .rounded_sm()
+        .border_2()
+        .border_color(border)
+        .child(widget)
+        .child(
+            div()
+                .id(SharedString::from(format!("design-{}", idx.0)))
+                .absolute()
+                .top_0()
+                .left_0()
+                .size_full()
+                .occlude()
+                .cursor_pointer()
+                .on_click(move |_, window, cx| select(idx, window, cx)),
+        )
+        .into_any_element()
 }
 
 /// The 24-hour time input (R8): a plain input plus Up/Down stepping.

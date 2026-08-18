@@ -5,7 +5,9 @@
 //! R13/R14 their margin and makes R15 structurally true rather than approximated.
 //! See `docs/adr/0002-encrypted-local-sqlite.md`.
 
+mod builder;
 mod form;
+mod mode;
 mod widgets;
 mod worklist;
 

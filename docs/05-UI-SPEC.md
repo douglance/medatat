@@ -246,9 +246,21 @@ product feature.
 | `Up` / `Down` | Radio group cycling; time field ±1 minute |
 | type-ahead | Select dropdowns jump by first letters |
 
-- **Scroll-into-view on focus with a 120 px margin and no animation.** Animation reads as
-  latency in a data-entry tool.
+- **Scroll-into-view on focus, with no animation.** Animation reads as latency in a
+  data-entry tool.
+
+  **Partially implemented, deliberately.** Scrolling works at *section* granularity and
+  there is **no 120 px margin**. gpui's `ScrollHandle::scroll_to_item(ix)` indexes direct
+  children of the scrolled container, and the direct children are sections — fields are
+  nested inside `Form` grids so that `Form` owns `col_span` (R12). Per-field targeting with
+  a margin needs either per-field bounds tracking or flattening the grids, and flattening
+  would cost R12. A hand-computed offset via `bounds_for_item` + `set_offset` is possible
+  but was not taken: the sign convention could not be verified on a locked screen, and a
+  wrong guess scrolls the wrong way undetectably. Revisit when someone can see the result.
 - **Always-visible high-contrast focus ring.** A keyboard user must never guess where they are.
+- **Every focus move expands its containing section first.** Tab, `Alt-Up`/`Down`, and a
+  palette pick all route through one `reveal_field`. Focusing into a collapsed section would
+  otherwise put the caret where nothing is drawn.
 - `focus_order` is derived from section and field ordinals, filtered by collapsed state.
   Tested by `ui::tests::tab_order_matches_focus_order`.
 
