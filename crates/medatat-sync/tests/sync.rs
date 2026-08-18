@@ -246,6 +246,69 @@ async fn a_conflict_does_not_spin_the_drain_loop_forever() {
 }
 
 #[tokio::test]
+async fn an_edit_made_while_its_field_is_in_flight_is_not_lost() {
+    // The regression this exists for. Before the outbox carried a sequence, `confirm`
+    // dropped a row by (case_id, field_id) alone — so a keystroke landing inside one round
+    // trip had its value deleted along with the value it replaced, leaving the newer value
+    // in field_value with `pending` cleared and nothing left to send it. Silent, and no
+    // signal to the abstractor.
+    let f = fixture();
+
+    // v1 is queued and picked up for sending.
+    f.store
+        .apply_local(f.case_id, &[(f.fields[0], text("v1"))], CaseRev::ZERO)
+        .unwrap();
+    let in_flight = f.store.next_outbox_batch(10).unwrap();
+    assert_eq!(in_flight.len(), 1);
+    let sent_seq = in_flight[0].seq;
+
+    // The abstractor types again before the response lands.
+    f.store
+        .apply_local(f.case_id, &[(f.fields[0], text("v2"))], CaseRev::ZERO)
+        .unwrap();
+
+    // The response to the *older* send arrives and is confirmed.
+    f.store
+        .confirm(f.case_id, &[(f.fields[0], sent_seq)], CaseRev(1))
+        .unwrap();
+
+    // v2 must still be queued.
+    let remaining = f.store.next_outbox_batch(10).unwrap();
+    assert_eq!(
+        remaining.len(),
+        1,
+        "the newer edit must survive confirmation of the older send"
+    );
+    assert_eq!(remaining[0].value, text("v2"));
+    assert!(
+        remaining[0].seq > sent_seq,
+        "re-enqueue must advance the sequence"
+    );
+    assert_eq!(f.store.unsynced_count().unwrap(), 1);
+
+    // And it actually reaches the server on the next pass.
+    let r = f.engine.drain_once().await.unwrap();
+    assert_eq!(r.applied, 1);
+    assert_eq!(f.mock.stored_values(f.case_id)[0].value, text("v2"));
+}
+
+#[tokio::test]
+async fn confirming_an_untouched_field_still_clears_it() {
+    // The guard must not overcorrect: a field that was not re-edited confirms normally.
+    let f = fixture();
+    f.store
+        .apply_local(f.case_id, &[(f.fields[0], text("only"))], CaseRev::ZERO)
+        .unwrap();
+    let r = f.engine.drain_once().await.unwrap();
+    assert_eq!(r.applied, 1);
+    assert_eq!(
+        f.store.unsynced_count().unwrap(),
+        0,
+        "nothing should remain queued"
+    );
+}
+
+#[tokio::test]
 async fn offline_queues_without_losing_work_and_drains_on_reconnect() {
     let f = fixture();
     f.mock.go_offline();

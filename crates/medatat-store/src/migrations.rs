@@ -8,7 +8,7 @@ use crate::schema;
 use rusqlite::{Connection, OptionalExtension};
 
 /// The schema version this build writes and expects.
-pub(crate) const LATEST: i64 = 2;
+pub(crate) const LATEST: i64 = 3;
 
 /// Brings `conn` up to [`LATEST`]. Idempotent.
 pub(crate) fn apply(conn: &mut Connection) -> Result<i64, StoreError> {
@@ -29,6 +29,9 @@ pub(crate) fn apply(conn: &mut Connection) -> Result<i64, StoreError> {
     }
     if current < 2 {
         tx.execute_batch(schema::V2)?;
+    }
+    if current < 3 {
+        tx.execute_batch(schema::V3)?;
     }
     // Later migrations append here, each guarded by `if current < N`.
 

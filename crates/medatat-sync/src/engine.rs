@@ -196,8 +196,18 @@ impl<T: Transport> SyncEngine<T> {
         {
             PutValuesResp::Applied { rev, applied } => {
                 let n = applied.len();
+                // Confirm against the sequence that was actually sent, not the field alone.
+                // If the abstractor edited one of these fields while it was in flight, its
+                // outbox row now holds a newer value; confirming by field id would delete
+                // that row and clear `pending`, leaving the newer value in `field_value`
+                // with nothing left to send it. Silent lost update — the one failure class
+                // this design exists to rule out.
+                let sent: Vec<(FieldId, i64)> = applied
+                    .iter()
+                    .filter_map(|f| rows.iter().find(|r| r.field_id == *f).map(|r| (*f, r.seq)))
+                    .collect();
                 self.store
-                    .confirm(case_id, &applied, rev)
+                    .confirm(case_id, &sent, rev)
                     .map_err(|e| TransportError::Malformed(e.to_string()))?;
                 Ok(PushOutcome::Applied(n))
             }

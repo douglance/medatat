@@ -264,21 +264,32 @@ fn empty_save_fields_is_a_no_op() {
 /// A database written before the `field` table existed must gain it on open, not be
 /// rejected or rebuilt.
 #[test]
-fn a_v1_database_migrates_forward_to_v2() {
+fn a_v1_database_migrates_forward_to_latest() {
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join("medatat.db");
 
     let store = open_file(&path).expect("open");
     let def = seven_kind_form();
     store.save_form(&def, ConfigRev(1)).expect("save_form");
-    // Rewind to what a v1 database on disk looks like.
+    // Rewind to what a v1 database on disk looks like: no `field` table (v2) and no
+    // `outbox.seq` (v3). Every later migration must be undone here, or the rewind is
+    // partial and the test proves less than it claims.
     store
-        .exec("DROP TABLE field; DROP INDEX IF EXISTS field_key; DELETE FROM schema_version; INSERT INTO schema_version (version) VALUES (1)")
+        .exec(
+            "DROP TABLE field; \
+             DROP INDEX IF EXISTS field_key; \
+             ALTER TABLE outbox DROP COLUMN seq; \
+             DELETE FROM schema_version; \
+             INSERT INTO schema_version (version) VALUES (1)",
+        )
         .expect("rewind to v1");
     drop(store);
 
     let store = open_file(&path).expect("reopen must migrate, not fail");
-    assert_eq!(store.schema_version().expect("version"), 2);
+    assert_eq!(
+        store.schema_version().expect("version"),
+        super::migrations::LATEST
+    );
     assert!(
         store.all_fields().expect("all_fields").is_empty(),
         "the new table starts empty and fills from the next config sync"
@@ -635,6 +646,39 @@ fn apply_server_values_never_clobbers_a_pending_row() {
 }
 
 #[test]
+fn confirm_leaves_a_row_that_was_re_enqueued_while_in_flight() {
+    // Confirming an older send must not delete the newer value that replaced it, nor
+    // clear `pending` on it. Without the sequence check both happened, and the newer value
+    // sat in field_value with nothing left to send it.
+    let (store, def, case_id) = fixture();
+    let f = ids(&def)[0];
+
+    store
+        .apply_local(case_id, &[(f, Value::Text("v1".into()))], CaseRev(0))
+        .expect("apply v1");
+    let sent_seq = store.next_outbox_batch(10).expect("batch")[0].seq;
+
+    store
+        .apply_local(case_id, &[(f, Value::Text("v2".into()))], CaseRev(0))
+        .expect("apply v2");
+
+    store
+        .confirm(case_id, &[(f, sent_seq)], CaseRev(4))
+        .expect("confirm");
+
+    let remaining = store.next_outbox_batch(10).expect("batch");
+    assert_eq!(remaining.len(), 1, "the newer edit must stay queued");
+    assert_eq!(remaining[0].value, Value::Text("v2".into()));
+    assert_eq!(
+        store
+            .query_i64("SELECT pending FROM field_value")
+            .expect("pending"),
+        1,
+        "and must stay pending, or nothing will ever send it"
+    );
+}
+
+#[test]
 fn confirm_clears_pending_and_drops_the_queue_row() {
     let (store, def, case_id) = fixture();
     let f = ids(&def)[0];
@@ -642,7 +686,10 @@ fn confirm_clears_pending_and_drops_the_queue_row() {
         .apply_local(case_id, &[(f, Value::Text("x".into()))], CaseRev(0))
         .expect("apply_local");
 
-    store.confirm(case_id, &[f], CaseRev(4)).expect("confirm");
+    let seq = store.next_outbox_batch(10).expect("batch")[0].seq;
+    store
+        .confirm(case_id, &[(f, seq)], CaseRev(4))
+        .expect("confirm");
 
     assert_eq!(
         store

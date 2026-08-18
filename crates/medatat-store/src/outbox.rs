@@ -14,6 +14,10 @@ use std::time::Duration;
 pub struct OutboxRow {
     pub case_id: CaseId,
     pub field_id: FieldId,
+    /// Bumped on every enqueue. `confirm` drops a row only if this still matches what was
+    /// sent, so an edit made while the field was in flight survives instead of being
+    /// deleted with the value it replaced.
+    pub seq: i64,
     pub value: Value,
     pub base_rev: CaseRev,
     pub attempts: i64,
@@ -33,14 +37,18 @@ pub(crate) fn enqueue(
     // `base_rev` is deliberately *not* refreshed on conflict. It records the server rev
     // the edit chain for this field started from, which is what per-field conflict
     // detection compares against; advancing it here would hide a genuine same-field race.
+    // `seq` advances past whatever is there, so a row re-enqueued while its previous
+    // value is in flight cannot be confirmed away by the response to that older send.
     conn.prepare_cached(
-        "INSERT INTO outbox (case_id, field_id, value_blob, base_rev, attempts, next_attempt_at) \
-         VALUES (?1, ?2, ?3, ?4, 0, ?5) \
+        "INSERT INTO outbox (case_id, field_id, value_blob, base_rev, attempts, next_attempt_at, seq) \
+         VALUES (?1, ?2, ?3, ?4, 0, ?5, \
+                 COALESCE((SELECT MAX(seq) FROM outbox), 0) + 1) \
          ON CONFLICT(case_id, field_id) DO UPDATE SET \
            value_blob = excluded.value_blob, \
            attempts = 0, \
            next_attempt_at = excluded.next_attempt_at, \
-           last_error = NULL",
+           last_error = NULL, \
+           seq = excluded.seq",
     )?
     .execute(params![
         case_id.to_string(),
@@ -59,7 +67,7 @@ pub(crate) fn next_batch(
     now: &str,
 ) -> Result<Vec<OutboxRow>, StoreError> {
     let mut stmt = conn.prepare_cached(
-        "SELECT case_id, field_id, value_blob, base_rev, attempts, next_attempt_at, last_error \
+        "SELECT case_id, field_id, value_blob, base_rev, attempts, next_attempt_at, last_error, seq \
          FROM outbox WHERE next_attempt_at <= ?1 ORDER BY next_attempt_at LIMIT ?2",
     )?;
     let mut rows = stmt.query(params![now, limit as i64])?;
@@ -76,6 +84,7 @@ pub(crate) fn next_batch(
             attempts: row.get(4)?,
             next_attempt_at: row.get(5)?,
             last_error: row.get(6)?,
+            seq: row.get(7)?,
         });
     }
     Ok(out)
@@ -92,6 +101,42 @@ pub(crate) fn drop_rows(
         stmt.execute(params![case_id.to_string(), f.to_string()])?;
     }
     Ok(())
+}
+
+/// Drops a queued edit **only if it is still the one that was sent**.
+///
+/// A row whose `seq` has moved on was re-enqueued while the older value was in flight, and
+/// now holds a newer value the server has not seen. Deleting it would clear `pending` on a
+/// field whose current value will never be sent — a silent lost update, which is the one
+/// failure class this design exists to rule out. Leaving it queued costs at most one
+/// redundant send.
+pub(crate) fn drop_rows_at_seq(
+    conn: &Connection,
+    case_id: CaseId,
+    sent: &[(FieldId, i64)],
+) -> Result<usize, StoreError> {
+    let mut stmt = conn
+        .prepare_cached("DELETE FROM outbox WHERE case_id = ?1 AND field_id = ?2 AND seq = ?3")?;
+    let mut dropped = 0;
+    for (field_id, seq) in sent {
+        dropped += stmt.execute(params![case_id.to_string(), field_id.to_string(), seq])?;
+    }
+    Ok(dropped)
+}
+
+/// The sequence currently queued for a field, if any.
+pub(crate) fn seq_of(
+    conn: &Connection,
+    case_id: CaseId,
+    field_id: FieldId,
+) -> Result<Option<i64>, StoreError> {
+    use rusqlite::OptionalExtension as _;
+    Ok(conn
+        .prepare_cached("SELECT seq FROM outbox WHERE case_id = ?1 AND field_id = ?2")?
+        .query_row(params![case_id.to_string(), field_id.to_string()], |r| {
+            r.get(0)
+        })
+        .optional()?)
 }
 
 /// Records a failed send and schedules the retry.

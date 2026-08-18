@@ -311,7 +311,8 @@ fn confirm_clears_pending_and_drains_the_outbox() {
     store
         .apply_local(case_id, &[(f[0], Value::Text("x".into()))], CaseRev::ZERO)
         .unwrap();
-    store.confirm(case_id, &[f[0]], CaseRev(1)).unwrap();
+    let seq = store.next_outbox_batch(10).unwrap()[0].seq;
+    store.confirm(case_id, &[(f[0], seq)], CaseRev(1)).unwrap();
 
     assert!(store.next_outbox_batch(10).unwrap().is_empty());
     assert_eq!(store.synced_rev(case_id).unwrap(), Some(CaseRev(1)));

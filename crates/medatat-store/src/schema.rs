@@ -111,3 +111,17 @@ CREATE TABLE field (
 );
 CREATE INDEX field_key ON field(key);
 "#;
+
+/// V3 — a monotonic sequence on each queued edit.
+///
+/// Without it, `confirm` drops an outbox row by `(case_id, field_id)` alone. If the
+/// abstractor edits that field again *while the first value is in flight*, `enqueue`
+/// upserts the row in place and `confirm` then deletes the newer value — which sits in
+/// `field_value` with `pending` cleared, so nothing ever sends it. A silent lost update.
+///
+/// The sequence is stored rather than held in memory on purpose: the outbox is on disk
+/// precisely so a crash cannot lose queued work, and an in-memory in-flight set would
+/// reintroduce the same class of loss through a different door.
+pub(crate) const V3: &str = r#"
+ALTER TABLE outbox ADD COLUMN seq INTEGER NOT NULL DEFAULT 0;
+"#;

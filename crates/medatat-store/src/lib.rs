@@ -276,15 +276,20 @@ impl Store {
     pub fn confirm(
         &self,
         case_id: CaseId,
-        fields: &[FieldId],
+        sent: &[(FieldId, i64)],
         rev: CaseRev,
     ) -> Result<(), StoreError> {
         let mut conn = self.writer()?;
         let tx = conn.transaction()?;
-        for field_id in fields {
-            values::mark_confirmed(&tx, case_id, *field_id, rev)?;
+        for (field_id, seq) in sent {
+            // Only clear `pending` where the queued edit is still the one that was sent.
+            // A row whose `seq` moved on was re-edited mid-flight and must stay pending,
+            // or its newer value sits in `field_value` with nothing left to send it.
+            if outbox::seq_of(&tx, case_id, *field_id)? == Some(*seq) {
+                values::mark_confirmed(&tx, case_id, *field_id, rev)?;
+            }
         }
-        outbox::drop_rows(&tx, case_id, fields)?;
+        outbox::drop_rows_at_seq(&tx, case_id, sent)?;
         cases::mark_synced(&tx, case_id, rev)?;
         tx.commit()?;
         Ok(())
