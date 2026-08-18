@@ -23,6 +23,13 @@ Remove-Item -Recurse -Force $Stage -ErrorAction SilentlyContinue
 New-Item -ItemType Directory -Force -Path $Stage | Out-Null
 Copy-Item $Bin (Join-Path $Stage 'medatat.exe')
 
+# The .ico ships beside the exe so the Start Menu shortcut can point at it. Embedding it
+# into the exe's resources would need a build-script change (winres) and a rebuild; this
+# gets the icon in front of the user without touching the compiler.
+$Icon = Join-Path $Root 'packaging\medatat.ico'
+if (Test-Path $Icon) { Copy-Item $Icon (Join-Path $Stage 'medatat.ico') }
+else { Write-Host "icon: $Icon missing - run: python3 packaging/make-icon.py" }
+
 $Zip = Join-Path $Dist "medatat-$Version-x86_64-windows.zip"
 Remove-Item -Force $Zip -ErrorAction SilentlyContinue
 Compress-Archive -Path (Join-Path $Stage '*') -DestinationPath $Zip
@@ -52,6 +59,8 @@ $Nsi = Join-Path $Dist 'medatat.nsi'
 @"
 Unicode true
 Name "medatat"
+Icon "$Stage\medatat.ico"
+UninstallIcon "$Stage\medatat.ico"
 OutFile "$Dist\medatat-$Version-setup.exe"
 InstallDir "`$LOCALAPPDATA\medatat"
 ; Per-user, so the installer needs no elevation. A data-entry tool has no reason to
@@ -67,7 +76,10 @@ UninstPage instfiles
 Section "Install"
   SetOutPath "`$INSTDIR"
   File "$Stage\medatat.exe"
-  CreateShortcut "`$SMPROGRAMS\medatat.lnk" "`$INSTDIR\medatat.exe"
+  File "$Stage\medatat.ico"
+  ; The shortcut takes its icon from the .ico rather than from the exe, which carries no
+  ; icon resource of its own.
+  CreateShortcut "`$SMPROGRAMS\medatat.lnk" "`$INSTDIR\medatat.exe" "" "`$INSTDIR\medatat.ico"
   WriteUninstaller "`$INSTDIR\uninstall.exe"
   ; One line each: NSIS has no line-continuation character, and a trailing backslash
   ; is a syntax error rather than a wrap.
@@ -81,6 +93,7 @@ Section "Uninstall"
   ; hold unsynced edits, and an uninstaller that deletes a week of unsynced clinical work
   ; without asking is indistinguishable from data loss.
   Delete "`$INSTDIR\medatat.exe"
+  Delete "`$INSTDIR\medatat.ico"
   Delete "`$INSTDIR\uninstall.exe"
   Delete "`$SMPROGRAMS\medatat.lnk"
   RMDir "`$INSTDIR"

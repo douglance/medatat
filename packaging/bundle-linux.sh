@@ -26,14 +26,21 @@ rm -rf "$STAGE"
 mkdir -p "$STAGE/DEBIAN" "$STAGE/usr/bin" "$STAGE/usr/share/applications" "$STAGE/usr/share/doc/medatat"
 install -m 0755 "$BIN" "$STAGE/usr/bin/medatat"
 
-# No Icon= key: this project ships no icon asset, and naming one that does not exist
-# leaves a broken image in every menu. Add the key together with the file, not before.
+# Icon= names a file that is installed below. The two must land together: an Icon key
+# pointing at nothing shows a broken image in every menu, and no Icon key at all makes
+# appimagetool refuse outright ("Icon entry not found in desktop file").
+ICON="$ROOT/packaging/medatat.png"
+[ -f "$ICON" ] || { echo "error: $ICON missing. Run: python3 packaging/make-icon.py" >&2; exit 1; }
+mkdir -p "$STAGE/usr/share/icons/hicolor/256x256/apps"
+install -m 0644 "$ICON" "$STAGE/usr/share/icons/hicolor/256x256/apps/medatat.png"
+
 cat > "$STAGE/usr/share/applications/medatat.desktop" <<DESKTOP
 [Desktop Entry]
 Type=Application
 Name=medatat
 Comment=Medical data abstraction
 Exec=/usr/bin/medatat
+Icon=medatat
 Terminal=false
 Categories=Office;
 DESKTOP
@@ -160,6 +167,12 @@ rm -rf "$APPDIR"
 mkdir -p "$APPDIR/usr/bin"
 install -m 0755 "$BIN" "$APPDIR/usr/bin/medatat"
 cp "$STAGE/usr/share/applications/medatat.desktop" "$APPDIR/medatat.desktop"
+# appimagetool looks for the icon beside the desktop file, and uses .DirIcon as the
+# thumbnail the file manager shows. Both are the same image.
+cp "$ICON" "$APPDIR/medatat.png"
+cp "$ICON" "$APPDIR/.DirIcon"
+mkdir -p "$APPDIR/usr/share/icons/hicolor/256x256/apps"
+install -m 0644 "$ICON" "$APPDIR/usr/share/icons/hicolor/256x256/apps/medatat.png"
 cat > "$APPDIR/AppRun" <<'APPRUN'
 #!/bin/sh
 HERE="$(dirname "$(readlink -f "$0")")"

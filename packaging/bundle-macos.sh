@@ -17,6 +17,25 @@ rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BIN" "$APP/Contents/MacOS/medatat"
 
+# Icon. iconutil wants an .iconset directory of named sizes; sips does the resampling.
+# Both ship with macOS, so this needs nothing installed. A bundle with no icon shows the
+# generic executable placeholder in the Dock and in Finder.
+ICON_SRC="$ROOT/packaging/medatat.png"
+if [ -f "$ICON_SRC" ] && command -v iconutil >/dev/null && command -v sips >/dev/null; then
+  ICONSET="$(mktemp -d)/medatat.iconset"
+  mkdir -p "$ICONSET"
+  for sz in 16 32 128 256 512; do
+    sips -z $sz $sz "$ICON_SRC" --out "$ICONSET/icon_${sz}x${sz}.png" >/dev/null 2>&1
+    sips -z $((sz * 2)) $((sz * 2)) "$ICON_SRC" --out "$ICONSET/icon_${sz}x${sz}@2x.png" >/dev/null 2>&1
+  done
+  iconutil -c icns "$ICONSET" -o "$APP/Contents/Resources/medatat.icns"
+  rm -rf "$(dirname "$ICONSET")"
+  ICON_PLIST='  <key>CFBundleIconFile</key><string>medatat</string>'
+else
+  echo "icon: skipped ($ICON_SRC missing, or iconutil/sips unavailable)"
+  ICON_PLIST=""
+fi
+
 cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -28,6 +47,7 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <key>CFBundleVersion</key><string>${VERSION}</string>
   <key>CFBundleShortVersionString</key><string>${VERSION}</string>
   <key>CFBundleExecutable</key><string>medatat</string>
+${ICON_PLIST}
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>LSMinimumSystemVersion</key><string>11.0</string>
   <!-- The app is a data-entry tool with no document types and no URL schemes; it
