@@ -275,6 +275,34 @@ jobs:
   # Rate limits (3/email, 20/IP per 15 min) never fire here: CI state is fresh
   # and one run makes two auth requests.
   # --------------------------------------------------------------------------
+  audit:
+    name: audit (cargo audit)
+    needs: preflight
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup show
+
+      - name: Cache cargo-audit
+        id: audit-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/bin/cargo-audit
+          key: cargo-audit-${{ runner.os }}-v0
+
+      - name: Install cargo-audit
+        # Guarded, not unconditional: `cargo install` refuses with exit 101 when the binary
+        # is present but absent from ~/.cargo/.crates.toml, which is exactly what restoring
+        # a cache of just the binary produces. The same mistake in wrangler.jsonc's custom
+        # build cost this repo two days of red smoke jobs.
+        if: steps.audit-cache.outputs.cache-hit != 'true'
+        run: cargo install --locked cargo-audit
+
+      - name: Audit
+        # The gate is "no advisory nobody has looked at". Every currently-ignored id is
+        # traced and justified in .cargo/audit.toml; anything new fails here.
+        run: cargo audit
+
   smoke:
     name: smoke (end-to-end against wrangler dev)
     needs: preflight

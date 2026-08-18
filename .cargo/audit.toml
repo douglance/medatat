@@ -1,0 +1,41 @@
+# `cargo audit` configuration.
+#
+# The gate is "no advisory we have not looked at", NOT "no advisories". Every id below was
+# read, traced to the dependency that pulls it, and assessed for reachability. Anything not
+# listed here fails CI.
+#
+# Re-check this file whenever the GPUI pin moves: these are all transitive through the Zed /
+# gpui-component graph or through `incurs`, so the fix arrives as an upstream bump, not as a
+# change here. Nothing in this list is a direct dependency of ours.
+
+[advisories]
+ignore = [
+    # quick-xml 0.38.4 -- unbounded namespace allocation, and quadratic duplicate-attribute
+    # checking. Both denial-of-service, both scored 7.5.
+    #
+    # Two paths reach it, neither carrying untrusted input:
+    #   zbus_xml   -> D-Bus introspection XML, Linux desktop builds only. The input is the
+    #                 local session bus, which is already inside the trust boundary: anything
+    #                 that can feed it XML can already talk to the user's session.
+    #   plist -> syntect -> toon-format -> incurs -> medatat-cli. Syntax-highlighting theme
+    #                 files that ship inside the crate, in a developer CLI that is not part
+    #                 of any shipped artifact.
+    #
+    # Not upgradable from here: zbus_xml and plist both require ^0.38, so 0.41.0 needs an
+    # upstream release. (0.41.0 is already in the graph for a different consumer.)
+    "RUSTSEC-2026-0195",
+    "RUSTSEC-2026-0194",
+
+    # rkyv 0.7.46 -- out-of-bounds read validating archives containing Rc/Arc.
+    #
+    # Present in Cargo.lock, never compiled. It is an *optional* feature of rust_decimal and
+    # we do not enable it; `cargo tree -i rkyv --target all -e all` finds no path to it. Any
+    # archive validation would need code that does not exist in this binary. cargo-audit
+    # reads the lockfile, which lists optional dependencies whether or not they are built.
+    "RUSTSEC-2026-0235",
+]
+
+# Unmaintained/unsound warnings are reported but do not fail the build. They are real signal
+# about the health of the dependency graph and worth reading; they are not defects with a
+# known exploit, and gating on them would mean gating on other people's release schedules.
+informational_warnings = ["unmaintained", "unsound", "notice"]
