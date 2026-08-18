@@ -132,25 +132,47 @@ heap. A second attempt died **earlier, at case 138**.
 
 Two things make it worse than it first looks:
 
-- **`NODE_OPTIONS=--max-old-space-size` does not work. Proven, not inferred.** A restart
-  with `12288` died at the same **1398 MB**. `wrangler dev` spawns `workerd` as a separate
-  process with its own V8, and `NODE_OPTIONS` never reaches it. The real remedy is to
-  **chunk the run and restart the Worker between chunks** — `medatat push --start <n>`
-  resumes at a case index, and seeds derive from that index, so a resumed run produces
-  exactly the cases an uninterrupted one would.
+- **`NODE_OPTIONS=--max-old-space-size` does not work.** Proven from the process tree:
+
+  ```
+  sh
+  └── node          ← wrangler; this is what NODE_OPTIONS reaches
+      ├── esbuild
+      └── workerd   ← a separate C++ binary embedding its own V8
+  ```
+
+  A restart with `12288` aborted at the same **1398 MB** as an unset run. The flag reaches
+  the Node process; the heap that dies belongs to `workerd`. The real remedy is to **chunk
+  the run and restart the Worker between chunks** — `medatat push --start <n>` resumes at a
+  case index, and seeds derive from that index, so a resumed run produces exactly the cases
+  an uninterrupted one would.
 - **Residual state compounds it.** `.wrangler/state` held 52 MB of the first run's objects,
   and the second run loaded those *plus* its own, which is why it failed sooner. **Clear
   `.wrangler/state` between seeding runs** or each retry starts further into the hole.
 
-Practical ceiling: roughly **150–250 live DOs per session**.
+**The ceiling is memory, not a case count.** It is roughly **1.4 GB of workerd heap**, which
+translates to a different number of cases depending on fields per case and how much state is
+already on disk: at 1,000 fields per case it aborted at **249 cases on empty state** and
+**138 on a 52 MB store**. Quoting it as "about 200 cases" would mislead anyone trying it
+with a different form size.
 
-This is a miniflare artifact and says nothing about production, where DOs are distributed
-and hibernate ([ADR-0001](adr/0001-durable-object-per-case.md)) — but it does cap what can
-be measured locally, and it means **a local cold-read number should be treated with
-suspicion**. An emulator that keeps everything resident may never truly evict, and a
-cold-read figure from it would read as evidence while measuring nothing. If Bench 4 cannot
-be answered honestly here, the finding is "this needs a real deployment", which is a better
-outcome than a plausible number with an asterisk nobody reads.
+### The OOM proves the emulator never evicts — so "cold" cannot be made here
+
+The crash is not just an obstacle; it is the evidence. **Memory grew monotonically with the
+number of Durable Objects touched** — 1.3 GB at 249 objects — and the second run died sooner
+because the first run's state was already on disk to load. If miniflare hibernated or evicted
+idle objects, that memory would have been reclaimed and the ceiling never reached. It was
+not, so it does not.
+
+That settles what Bench 4 can and cannot measure locally. The only "cold" obtainable here is
+**a fresh `workerd` process re-opening SQLite from disk**. That is a real cold *storage*
+read, and comparing it against a warm read tells you what the disk open costs — worth having.
+It is **not** Cloudflare's hibernation wake path, because nothing here ever hibernates: no
+eviction, no cross-colo placement.
+
+So a local figure is a **floor, and must be labelled as one**. Published as the production
+number it would be worse than nothing, because it would read as evidence and stop anyone
+measuring the real one. **Bench 4's real answer needs a deployment.**
 
 ---
 

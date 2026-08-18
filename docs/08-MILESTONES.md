@@ -56,9 +56,12 @@ rework:
       grew), so any figure from it — and any extrapolation off it — is an artifact. Needs
       one run against a deployed Worker. See
       [07-TESTING.md](07-TESTING.md#throughput-is-not-credibly-measurable-on-the-local-emulator).
-- [ ] **Bench 4 no longer blocks on the 100k corpus.** "Cold" is a property of time and
-      eviction, not corpus size — each DO is an independent database, so 20–50 cases left
-      past the eviction window answer it. See [07-TESTING.md](07-TESTING.md#bench-4-detail). Run it with
+- [ ] **Bench 4 needs a deployment, not a bigger local corpus.** "Cold" is a property of
+      time and eviction, not corpus size — but the local emulator **never evicts at all**,
+      which its own OOM proves (memory grew monotonically with objects touched). The only
+      cold obtainable locally is a fresh `workerd` process re-opening SQLite, which is a
+      real *storage* floor and not the hibernation wake path. See
+      [07-TESTING.md](07-TESTING.md#the-oom-proves-the-emulator-never-evicts--so-cold-cannot-be-made-here). Run it with
       `medatat push --cases 1000 --fields 1000`, which writes through the ordinary
       `POST /cases` + `POST /cases/{id}/values` path and prints the projection. Not
       `/bulk/cases`: that carries no values, and a whole-case bulk write would stamp every
