@@ -29,4 +29,12 @@ tempfile = { workspace = true }
 default = []
 # PHI mode: SQLCipher, key from a mode-0600 file beside the database (AGENTS.md rule 11). The redacting `Debug` and zeroizing `Drop` come
 # from medatat-core's own `phi` feature, which this turns on so the two cannot diverge.
-phi = ["dep:getrandom", "rusqlite/bundled-sqlcipher", "medatat-core/phi"]
+# `bundled-sqlcipher-vendored-openssl`, not plain `bundled-sqlcipher`. The latter links
+# whatever OpenSSL the host provides, which fails outright on Windows -- no OPENSSL_DIR,
+# no system OpenSSL -- and was invisible while this feature was only ever built on ubuntu.
+#
+# Vendoring is the better answer here regardless of the build error: this is the feature
+# that encrypts clinical data at rest, and it should not depend on whichever OpenSSL
+# happens to be installed on an abstractor's machine. It costs build time on a
+# non-default feature, which is the cheapest place to spend it.
+phi = ["dep:getrandom", "rusqlite/bundled-sqlcipher-vendored-openssl", "medatat-core/phi"]

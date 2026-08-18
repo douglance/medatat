@@ -38,11 +38,69 @@ Terminal=false
 Categories=Office;
 DESKTOP
 
+# Machine-readable DEP-5. lintian rejects a copyright file with no actual copyright
+# notice in it, which the first version of this was.
 cat > "$STAGE/usr/share/doc/medatat/copyright" <<'COPYRIGHT'
+Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
 Upstream-Name: medatat
+
 Files: *
+Copyright: 2026 Doug Lance <doug.lance@gmail.com>
 License: proprietary
+ All rights reserved. This software is not distributed under a free-software
+ licence; no permission to copy, modify, or redistribute is granted here.
 COPYRIGHT
+
+# A native package must ship a changelog, and lintian treats its absence as an error
+# rather than a nicety: it is how anyone installing the package finds out what changed.
+# The date comes from the last commit so a rebuild of the same tree is reproducible,
+# rather than from `date` which would make every build differ.
+CHANGELOG_DATE="$(git -C "$ROOT" log -1 --format=%aD 2>/dev/null || echo 'Mon, 18 Aug 2026 00:00:00 +0000')"
+cat > "$STAGE/usr/share/doc/medatat/changelog" <<CHANGELOG
+medatat (${VERSION}) unstable; urgency=medium
+
+  * Initial release.
+
+ -- medatat <doug.lance@gmail.com>  ${CHANGELOG_DATE}
+CHANGELOG
+# -n omits the timestamp from the gzip header, for the same reproducibility reason.
+gzip -9n "$STAGE/usr/share/doc/medatat/changelog"
+
+# A binary in /usr/bin with no man page is a lintian warning and, more to the point, a
+# real gap: `man medatat` is where someone looks first.
+mkdir -p "$STAGE/usr/share/man/man1"
+cat > "$STAGE/usr/share/man/man1/medatat.1" <<MAN
+.TH MEDATAT 1 "2026-08-18" "medatat ${VERSION}" "User Commands"
+.SH NAME
+medatat \- medical data abstraction tool
+.SH SYNOPSIS
+.B medatat
+.SH DESCRIPTION
+.B medatat
+is a data-entry application for abstracting medical records into data-driven forms
+whose fields and layout are configured through the interface rather than in code.
+.PP
+Edits are written to an encrypted local store first and synchronised in the background,
+so the interface never waits for the network and never shows a loading spinner. Work
+continues unchanged while offline; queued edits are sent when connectivity returns.
+.SH FILES
+.TP
+.I $XDG_DATA_HOME/medatat/
+Local store and its key file, falling back to
+.I ~/.local/share/medatat/
+when
+.B XDG_DATA_HOME
+is unset. Contains unsynced edits: do not delete it to troubleshoot, as queued work
+has not reached the server and is not recoverable from it.
+.SH EXIT STATUS
+.TP
+.B 0
+The application exited normally.
+.SH SEE ALSO
+Project documentation in
+.IR docs/ .
+MAN
+gzip -9n "$STAGE/usr/share/man/man1/medatat.1"
 
 # dpkg-shlibdeps reads the ELF and resolves each SONAME to the package providing it. It
 # insists on running from a tree containing debian/control, so give it a throwaway one.
