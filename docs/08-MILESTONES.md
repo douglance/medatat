@@ -237,7 +237,10 @@ would close the gap, and it needs a human at an unlocked screen.
 - [ ] 100,000 synthetic cases / ~100M values seeded (R16).
 - [ ] Bench 4 run against the full corpus; results recorded.
 - [ ] Actual seeding time and Cloudflare cost recorded against the M1 extrapolation.
-- [ ] Benches 1 and 2 re-run against a client holding a realistic caseload; still inside targets.
+- [x] Benches 1 and 2 re-run against a client holding a realistic caseload; still inside
+      targets. **500 cases × 1,000 fields = 500k rows: open-a-case mean 590 µs (gate 5 ms),
+      `apply_local` 300 fields 8.76 ms (gate 10 ms), plan still a PK range scan, 130 KB per
+      case.** The margin is flat across store size — 500× the data for 0.84× the cost.
 - [ ] `POST /admin/reindex` implemented and verified to rebuild `case_index` from the DOs.
 - [ ] A deliberately corrupted `case_index` row is detected and repaired by reindex.
 

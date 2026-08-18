@@ -23,6 +23,7 @@ each says so in its own module docs rather than asserting a number it cannot mea
 | **3** | Open-case intent → first painted frame, 200 cases | **p99 < 50 ms** | — | R13, R15 | not yet |
 | **4** | Full sync of one case from a **cold, hibernated** DO; seeding throughput | recorded | — | R16 | placeholder |
 | **5** | Benches 1 and 2 re-run against a **500-case caseload** (500k rows) | **≤ 1.5× the one-case control** | **0.95× read, 1.15× write** ✅ | R13, R14, M7 | gate |
+| **6** | WAL checkpoint stall: cost vs database size, vs WAL size, and as felt while typing | characterised | **flat in db size, linear in WAL, ~10 ms every ~128 saves** | R14 | diagnostic |
 
 Bench 5 answers the question Benches 1 and 2 cannot: whether their margin is real or an
 artefact of a table small enough to sit entirely in cache. It seeds 500 cases × 1000 fields
@@ -39,6 +40,70 @@ way to make it pass would be to weaken it. Benches 1 and 2 keep the absolute gat
 fixture where they mean something. Bench 5 also asserts the 200 ms requirement as a floor,
 and prints the host load average beside every result. Shrink it with
 `MEDATAT_BENCH_CASES` / `MEDATAT_BENCH_FIELDS`.
+
+### Bench 6 — the WAL checkpoint stall
+
+Bench 5 found that a minority of `apply_local` calls take 20–50× the median, every slow one
+coinciding with the `-wal` file reaching ~4 MB and resetting. SQLite's `wal_autocheckpoint`
+defaults to 1000 pages and the commit that crosses the line pays to copy the WAL back into
+the database and fsync it. Bench 6 exists because that was a plausible story rather than a
+measurement, and the shape of the bug — an occasional slow save in production, never in a
+benchmark — is one that gets tuned away instead of understood.
+
+**It does not scale with the store.** Checkpoint cost with the WAL held at 4 MB: 1 case
+(2.7 MB db) 21.1 ms, 100 cases (15 MB) 24.9 ms, 500 cases (64.8 MB) 18.0 ms — 500× the data
+for **0.85×** the cost. A checkpoint copies WAL pages and fsyncs; how much else is in the
+database is irrelevant. This is not a hazard that grows for the users holding the most data.
+
+**It scales with the WAL**, near-linearly: 1 MB → 6.2 ms, 2 MB → 11.3 ms, 4 MB → 19.9 ms,
+8 MB → 25.9 ms, 16 MB → 38.1 ms. So the stall size is set by `wal_autocheckpoint` and
+nothing else, which makes it a knob with a known exchange rate rather than a mystery.
+
+**What an abstractor feels**, typing one field at a time while moving down a form, 3000
+saves: median save 128 µs, a checkpoint every **~128 saves** costing **p50 ~10 ms, worst
+attributable 23 ms**. Under `--features phi`: every ~125 saves, p50 6.0 ms, worst 9.7 ms.
+Bench 5's 300-field batch is the misleading shape — it fills the WAL 8× faster and
+checkpoints every ~17 saves.
+
+**Recommendation: do not tune it.** 23 ms against a 200 ms requirement is 8.7× of margin, it
+does not degrade as caseloads grow, and `wal_autocheckpoint = 0` plus a background
+checkpointer would trade a bounded stall for an **unbounded WAL** if that thread ever stops
+— a worse failure mode for a clinical app, and one this project has already hit as a full
+disk. If a dropped frame is ever measured and attributed here, the knob is
+`wal_autocheckpoint`, and 200 pages instead of 1000 buys ~2 ms stalls five times as often.
+
+One trap for whoever revisits this: **plain SQLite truncates the WAL when it resets and
+SQLCipher's build does not**, so detecting a checkpoint by the file shrinking reports "no
+checkpoints" under `phi` — the detector disappearing, not the checkpoints. Bench 6 counts
+saves an order of magnitude over the median as well, which gives the same ~125-save period
+in both builds.
+
+Bench 6 is a diagnostic, not a gate, and no-ops unless asked:
+
+```sh
+MEDATAT_CHECKPOINT_PROBE=1 cargo bench -p medatat-testkit --bench bench6_checkpoint
+```
+
+### Running the suite on a constrained machine
+
+`--features phi` is not a cheap extra flag. Cargo keys its build cache on the feature set,
+so `cargo test --workspace --features phi` recompiles the **entire dependency tree** a
+second time rather than reusing the default build, and on top of that `phi` turns on
+`rusqlite/bundled-sqlcipher`, which compiles SQLCipher from source. Running Benches 5 and 6
+in both configurations rebuilt `target/release` to 528 MB across 103 rlibs and 38 MB of
+build scripts — for a project whose `target/` is already tens of gigabytes because of GPUI.
+
+That is the price of having the flag at all, and it is worth paying: a `phi` path that is
+never built is a `phi` path that has already rotted. But it means **the full gate suite
+needs gigabytes of free disk, not megabytes**, and this project has twice hit 100% capacity
+mid-run. A full volume surfaces from SQLite as `SqliteFailure(DiskFull)` partway through
+seeding, which reads exactly like a store bug and is not one.
+
+So: check free space immediately before a benchmark run rather than at the start of a work
+session — it moves by gigabytes in minutes on a shared machine. Bench 5 refuses to start
+without headroom for its corpus and says in the failure message not to shrink the corpus to
+fit, because a smaller run that passes answers a different question while looking like a
+result.
 
 Bench 3 measures only `core.build_instance` today, because two of its four spans live in
 `medatat-ui`, which is still being built. The 50 ms gate belongs to the assembled bench and
@@ -374,6 +439,66 @@ The general form, since this is the fifth instance of the shape: **measuring a c
 proves the component, never its wiring.** The only thing that catches a missing caller is a
 test that starts where the user starts — which for the UI means a `#[gpui::test]` that
 presses the key, and for the API means a request over HTTP rather than a call to a handler.
+
+### Bench 5 — the R13 margin at realistic scale, measured 2026-08-18
+
+Every earlier number was taken against a store holding **one case**. This is 500 cases ×
+1,000 fields = **500,000 rows**, which is what an abstractor's assigned caseload actually
+looks like.
+
+**The margin does not degrade with store size. It is flat.**
+
+| cases in store | first-touch open |
+|---|---|
+| 1 | 328 µs |
+| 50 | 286 µs |
+| 250 | 245 µs |
+| **500** | **276 µs** |
+
+500× the data for 0.84× the cost. Paired one-case control, interleaved to cancel host load:
+**read 0.96×, save 1.14×.**
+
+| | plain | SQLCipher |
+|---|---|---|
+| open a case (mean) | **590 µs** | 736 µs |
+| open a case (p99) | 795 µs | — |
+| `apply_local`, 300 fields (mean) | **8.76 ms** | 3.58 ms |
+| on-disk | 63.5 MB | 65.1 MB |
+
+Query plan at 500k rows is still `SEARCH field_value USING PRIMARY KEY (case_id=?)` — the
+`WITHOUT ROWID` clustering holds, and a case's 1,000 values span ~33 pages of 16,026.
+**130 KB per case, 133 bytes per value**, which is the figure `docs/04-SYNC.md` should use
+for caseload sizing rather than the estimate it carries.
+
+**This validates [ADR-0002](adr/0002-encrypted-local-sqlite.md) at the scale it claimed.**
+The local-first decision rested on a margin measured against a trivial store; it survives a
+realistic one.
+
+**One number is tighter than the rest and worth watching:** `apply_local` at 300 fields is
+8.76 ms against a 10 ms gate. That is the bulk path, not the steady state — a single-field
+save is ~128 µs — but it has less headroom than anything else here.
+
+### Bench 6 — the WAL checkpoint stall, characterised
+
+Diagnostic only; no-ops unless `MEDATAT_CHECKPOINT_PROBE=1`.
+
+**It does not scale with the store**, which is what it was suspected of. WAL held at 4 MB:
+1 case 21.1 ms, 100 cases 24.9 ms, 500 cases 18.0 ms. **It scales with the WAL**, near
+linearly: 1 MB → 6.2 ms, 4 MB → 19.9 ms, 16 MB → 38.1 ms. `wal_autocheckpoint` is the only
+knob.
+
+Typing one field at a time down a form, 3,000 saves: median **128 µs**, with a checkpoint
+every ~128 saves costing p50 ~10 ms and **23 ms worst attributable**.
+
+**Recommendation: do not tune it.** 23 ms against a 200 ms requirement, and it does not
+degrade as caseloads grow. Setting `wal_autocheckpoint = 0` with a background checkpointer
+would trade a bounded stall for an **unbounded WAL if that thread ever stops** — a worse
+failure for a clinical app, and one this machine has already demonstrated in another form as
+a full disk.
+
+**A trap for whoever revisits this:** plain SQLite truncates the WAL on reset and SQLCipher's
+build does not, so detecting a checkpoint by watching the file shrink reports "no
+checkpoints" under `phi`. That is the detector vanishing, not the checkpoints.
 
 ### What CI does not cover
 

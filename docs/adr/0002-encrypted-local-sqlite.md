@@ -93,6 +93,20 @@ unaffected.
 *(This entry previously described a Secret Service fallback on Linux. No keyring daemon is
 involved any more, so that consequence no longer applies.)*
 
+## Validated at scale — 2026-08-18
+
+The decision rested on a margin measured against a store holding **one case**. It has now
+been measured against **500 cases × 1,000 fields = 500,000 rows**, which is what an
+abstractor's assigned caseload actually looks like.
+
+**The margin is flat.** First-touch open: 328 µs at 1 case, 276 µs at 500. Open-a-case mean
+**590 µs** against a 5 ms gate and a 200 ms requirement. The query plan at 500k rows is
+still `SEARCH field_value USING PRIMARY KEY`, so the `WITHOUT ROWID` clustering does what it
+was chosen to do. SQLCipher costs about 1.25× on read and nothing measurable on save.
+
+That is the claim in this ADR, tested rather than argued. See
+[07-TESTING.md](../07-TESTING.md#bench-5--the-r13-margin-at-realistic-scale-measured-2026-08-18).
+
 ## Verification
 
 Benches 1 and 2 ([07-TESTING.md](../07-TESTING.md)) assert hard thresholds at 5 ms and

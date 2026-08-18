@@ -43,3 +43,19 @@ harness = false
 [[bench]]
 name = "bench4_scale"
 harness = false
+
+[[bench]]
+name = "bench5_caseload"
+harness = false
+
+# Diagnostic, not a gate: no-ops unless MEDATAT_CHECKPOINT_PROBE is set, so it costs
+# `cargo bench` nothing while staying reproducible for anyone who wants the numbers.
+[[bench]]
+name = "bench6_checkpoint"
+harness = false
+
+# `phi` here only forwards to the crates under test, so `cargo bench --features phi`
+# measures the SQLCipher path (docs/12-PHI-READINESS.md item 9).
+[features]
+default = []
+phi = ["medatat-core/phi", "medatat-store/phi"]
