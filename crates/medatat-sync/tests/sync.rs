@@ -381,6 +381,32 @@ async fn caseload_sync_never_clobbers_an_unsynced_local_edit() {
 }
 
 #[tokio::test]
+async fn config_sync_persists_unplaced_fields() {
+    // The Unplaced drawer's whole reason to exist: a field in no form must survive a
+    // restart, or a coordinator who unplaces one loses the route back to its values.
+    let f = fixture();
+    let def = form();
+    let orphan = medatat_core::def::FieldDef {
+        field_id: FieldId::new(),
+        key: "orphan".into(),
+        kind: FieldKind::Date,
+    };
+    f.mock.set_config(ConfigDelta {
+        config_rev: ConfigRev(3),
+        forms: vec![def],
+        fields: vec![orphan.clone()],
+    });
+
+    f.engine.sync_config().await.unwrap();
+
+    let stored = f.store.all_fields().unwrap();
+    assert!(
+        stored.iter().any(|x| x.field_id == orphan.field_id),
+        "a field placed in no form must still be persisted"
+    );
+}
+
+#[tokio::test]
 async fn config_sync_stores_forms_and_records_the_revision() {
     let f = fixture();
     let def = form();

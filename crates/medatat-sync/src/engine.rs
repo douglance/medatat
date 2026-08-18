@@ -287,6 +287,14 @@ impl<T: Transport> SyncEngine<T> {
         let Some(delta) = self.transport.config(since).await? else {
             return Ok(None);
         };
+        // Fields before forms. A form references fields, and `delta.fields` is the only
+        // record of one that sits in no form — the builder's Unplaced drawer reads it, and
+        // without it a coordinator who unplaces a field loses the route back to its stored
+        // values on the next restart. The values themselves are never at risk; they stay in
+        // `field_value` keyed by `field_id`.
+        if !delta.fields.is_empty() {
+            self.store.save_fields(&delta.fields)?;
+        }
         for form in &delta.forms {
             self.store.save_form(form, delta.config_rev)?;
         }
