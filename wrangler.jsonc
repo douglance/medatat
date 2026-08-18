@@ -16,7 +16,20 @@
     // The trailing path argument is load-bearing: wrangler runs this from the
     // directory holding wrangler.jsonc, and the root Cargo.toml is a [workspace]
     // with no [package], so a bare `worker-build` fails with "missing field package".
-    "command": "cargo install -q worker-build && worker-build --profile release-wasm crates/medatat-worker"
+    //
+    // Install only when the binary is absent. `cargo install` unconditionally is not
+    // idempotent: if worker-build is on PATH but not recorded in ~/.cargo/.crates.toml,
+    // cargo rebuilds it and then refuses with "binary `worker-build` already exists in
+    // destination", exit 101 -- and wrangler reports that as the whole dev server failing
+    // to start. CI hits it whenever a cache restores the binary without the registry it
+    // was recorded in; a developer hits it after any install that bypassed cargo.
+    // Watch ONLY the Rust sources. wrangler's default watch directory picks up the
+    // directory worker-build writes into, so the build output retriggers the watcher:
+    // wrangler restarts, the new instance tries to bind before the old one has released
+    // the port, and workerd dies with "Address already in use" on whatever port was
+    // chosen. It presents as the port being held by something else -- it is not.
+    "watch_dir": "crates/medatat-worker/src",
+    "command": "command -v worker-build >/dev/null 2>&1 || cargo install -q --locked worker-build; worker-build --profile release-wasm crates/medatat-worker"
   },
 
   "d1_databases": [
