@@ -26,63 +26,21 @@ each says so in its own module docs rather than asserting a number it cannot mea
 | **6** | WAL checkpoint stall: cost vs database size, vs WAL size, and as felt while typing | characterised | **flat in db size, linear in WAL, ~10 ms every ~128 saves** | R14 | diagnostic |
 
 Bench 5 answers the question Benches 1 and 2 cannot: whether their margin is real or an
-artefact of a table small enough to sit entirely in cache. It seeds 500 cases × 1000 fields
-(~500,000 rows, 63.5 MB) and re-measures. A single-case load is flat across the whole growth
-curve — 1 case 355 µs, 500 cases 237 µs, first-touch and never re-read — and the plan stays
-`SEARCH field_value USING PRIMARY KEY`. That is the `WITHOUT ROWID` clustering doing exactly
-what [ADR-0002](adr/0002-encrypted-local-sqlite.md) claims.
+artefact of a table small enough to sit entirely in cache. The result is below, under
+[Bench 5 — the R13 margin at realistic scale](#bench-5--the-r13-margin-at-realistic-scale-measured-2026-08-18);
+Bench 6's characterisation of the checkpoint stall is beside it.
 
-It gates on a **ratio against a one-case control measured in the same process**, not on
-5 ms and 10 ms. Absolute wall-clock here moves up to 2× with host load alone — measured: on
-a loaded machine the one-case control saved in 9.1 ms against Bench 2's recorded 5.2 ms — so
-an absolute gate in this file would fail for reasons unrelated to the corpus, and the only
-way to make it pass would be to weaken it. Benches 1 and 2 keep the absolute gates, on the
-fixture where they mean something. Bench 5 also asserts the 200 ms requirement as a floor,
-and prints the host load average beside every result. Shrink it with
-`MEDATAT_BENCH_CASES` / `MEDATAT_BENCH_FIELDS`.
-
-### Bench 6 — the WAL checkpoint stall
-
-Bench 5 found that a minority of `apply_local` calls take 20–50× the median, every slow one
-coinciding with the `-wal` file reaching ~4 MB and resetting. SQLite's `wal_autocheckpoint`
-defaults to 1000 pages and the commit that crosses the line pays to copy the WAL back into
-the database and fsync it. Bench 6 exists because that was a plausible story rather than a
-measurement, and the shape of the bug — an occasional slow save in production, never in a
-benchmark — is one that gets tuned away instead of understood.
-
-**It does not scale with the store.** Checkpoint cost with the WAL held at 4 MB: 1 case
-(2.7 MB db) 21.1 ms, 100 cases (15 MB) 24.9 ms, 500 cases (64.8 MB) 18.0 ms — 500× the data
-for **0.85×** the cost. A checkpoint copies WAL pages and fsyncs; how much else is in the
-database is irrelevant. This is not a hazard that grows for the users holding the most data.
-
-**It scales with the WAL**, near-linearly: 1 MB → 6.2 ms, 2 MB → 11.3 ms, 4 MB → 19.9 ms,
-8 MB → 25.9 ms, 16 MB → 38.1 ms. So the stall size is set by `wal_autocheckpoint` and
-nothing else, which makes it a knob with a known exchange rate rather than a mystery.
-
-**What an abstractor feels**, typing one field at a time while moving down a form, 3000
-saves: median save 128 µs, a checkpoint every **~128 saves** costing **p50 ~10 ms, worst
-attributable 23 ms**. Under `--features phi`: every ~125 saves, p50 6.0 ms, worst 9.7 ms.
-Bench 5's 300-field batch is the misleading shape — it fills the WAL 8× faster and
-checkpoints every ~17 saves.
-
-**Recommendation: do not tune it.** 23 ms against a 200 ms requirement is 8.7× of margin, it
-does not degrade as caseloads grow, and `wal_autocheckpoint = 0` plus a background
-checkpointer would trade a bounded stall for an **unbounded WAL** if that thread ever stops
-— a worse failure mode for a clinical app, and one this project has already hit as a full
-disk. If a dropped frame is ever measured and attributed here, the knob is
-`wal_autocheckpoint`, and 200 pages instead of 1000 buys ~2 ms stalls five times as often.
-
-One trap for whoever revisits this: **plain SQLite truncates the WAL when it resets and
-SQLCipher's build does not**, so detecting a checkpoint by the file shrinking reports "no
-checkpoints" under `phi` — the detector disappearing, not the checkpoints. Bench 6 counts
-saves an order of magnitude over the median as well, which gives the same ~125-save period
-in both builds.
-
-Bench 6 is a diagnostic, not a gate, and no-ops unless asked:
-
-```sh
-MEDATAT_CHECKPOINT_PROBE=1 cargo bench -p medatat-testkit --bench bench6_checkpoint
-```
+**How Bench 5 gates matters as much as what it measures.** It asserts a **ratio against a
+one-case control built in the same process and interleaved with the subject**, not the 5 ms
+and 10 ms thresholds. Absolute wall-clock in this file moves up to 2× with host load
+alone — measured: on a loaded machine the one-case control saved in 9.1 ms against Bench 2's
+recorded 5.2 ms — so an absolute gate here would fail for reasons that have nothing to do
+with the corpus, and the only available fix would be to weaken it, which is the one move
+[AGENTS.md](../AGENTS.md) forbids. Benches 1 and 2 keep the absolute gates on the fixture
+where they mean something. Bench 5 additionally asserts the 200 ms requirement as a floor,
+and prints the host load average beside every result so a number from one day can be
+compared with a number from another. Shrink the corpus with `MEDATAT_BENCH_CASES` /
+`MEDATAT_BENCH_FIELDS` — but see the disk note below before doing so to make a run fit.
 
 ### Running the suite on a constrained machine
 

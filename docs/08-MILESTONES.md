@@ -8,6 +8,29 @@ tri-platform viability and the latency claim — are settled in the first two we
 
 ---
 
+## Status at a glance — 2026-08-18
+
+| | | |
+|---|---|---|
+| **M0** Platform bring-up | 🟡 | macOS only. Windows and Linux have never been built |
+| **M1** Perf gate | 🟡 | Benches 1–2 pass and are measured; bundle 391 KB gz; `send_email` verified locally. **Seeding throughput unmeasurable locally** |
+| **M2** Core + store | ✅ | Validated at 500k rows — the margin is flat |
+| **M3** Worker + sync | ✅ | API verified live over HTTP; `smoke.sh` green |
+| **M4** Runtime renderer | ✅ | All seven field kinds, 1–3 columns |
+| **M5** Form builder | 🟡 | Items 1–6, 8, 9 done. Item 7 needs two machines and live sync |
+| **M6** Worklist + keyboard | 🟡 | Built and unit-tested; **never exercised on Windows or Linux**, and key routing is demonstrably platform-specific |
+| **M7** Scale run | 🟡 | Client side done (Bench 5). Server side needs a deployment |
+| **M8** Packaging | ❌ | Not started; needs the other two platforms |
+
+**The three things blocking the amber rows are not code**: a Cloudflare deployment (D1 + KV
+on the user's account), machines running Windows and Linux, and CI actually executing, which
+needs a remote. Everything reachable without those is done.
+
+**What is verified how** is set out in
+[00-REQUIREMENTS §Verification status](00-REQUIREMENTS.md#verification-status--2026-08-18).
+The short version: R13 and R14 are measured, R5–R12 are executed, R15 is structural, and
+**R16 is not verified**.
+
 ## M0 — Platform bring-up
 
 **~1 week. Throwaway code is acceptable.**
