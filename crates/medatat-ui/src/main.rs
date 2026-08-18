@@ -281,6 +281,11 @@ impl Workspace {
             Some(first) => first,
             None => {
                 let def = demo_form();
+                // Fields before the form, and always both: the `field` table is what
+                // outlives placement, so a form saved without it leaves the builder's
+                // Unplaced drawer with nothing to find.
+                let fields: Vec<_> = def.iter_fields().map(|f| (*f.field).clone()).collect();
+                store.save_fields(&fields)?;
                 store.save_form(&def, ConfigRev(1))?;
                 Arc::new(def)
             }

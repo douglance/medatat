@@ -7,14 +7,14 @@
 //! module note in `view.rs` exists to prevent, arriving through a different door. As its own
 //! entity, a query keystroke re-renders the result list and nothing else.
 
-use crate::widgets::{self, OnChoose, PaletteInput};
+use crate::widgets::{self, LineInput, OnChoose};
 use gpui::{Context, IntoElement, Render, Subscription, Window};
 use medatat_core::{FieldIdx, FormDef, search_fields};
 use std::sync::Arc;
 
 pub struct FieldPalette {
     def: Arc<FormDef>,
-    query: PaletteInput,
+    query: LineInput,
     /// Best match first, straight from core's ranking.
     matches: Vec<FieldIdx>,
     on_choose: OnChoose,
@@ -28,7 +28,7 @@ impl FieldPalette {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let query = PaletteInput::new(window, cx);
+        let query = LineInput::new("Find field…", window, cx);
         let sub = query.subscribe(window, cx, |this: &mut Self, text, _, cx| {
             this.matches = search_fields(&this.def, &text);
             // Notifies this entity only. `FormView` is untouched.

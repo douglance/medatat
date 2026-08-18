@@ -16,7 +16,7 @@ as a blocking element, and never blocks on its failure.
 ## The `Transport` trait
 
 `medatat-sync` must **not** depend on `reqwest`. That is what makes it testable against
-`MockTransport` with a `FakeClock`, and what lets `medatat-cli` reuse it.
+`medatat_testkit::MockTransport`, and what lets `medatat-cli` reuse it.
 
 ```rust
 #[async_trait]
@@ -96,11 +96,13 @@ costs microseconds. Debouncing would only add a window in which a crash loses da
 
 ## Drain loop
 
-One loop per app instance, on the background executor.
+One drain loop per app instance, on the background executor — but the loop lives in the
+caller, not in the engine.
 
-`SyncEngine` owns no timer. It exposes one pass — `drain_once` — plus `sync_caseload`,
-`sync_config`, and `next_delay`; the caller decides the cadence. That is what lets the whole
-engine be driven by a `FakeClock` in tests.
+`SyncEngine` owns no timer and no clock. It exposes a single pass — `drain_once` — plus
+`sync_caseload`, `sync_config`, and `next_delay`; the caller decides the cadence. A test can
+therefore drive an entire scenario by calling `drain_once` when it chooses, with no
+simulated timeline and nothing to wait for.
 
 ```rust
 pub async fn drain_once(&self) -> Result<DrainReport, SyncError> {
@@ -153,19 +155,43 @@ client that lost connectivity together retries together.
 
 ### Config
 
-Poll `GET /config?since_rev=<n>` every 60 s and on app focus. Config is tiny and
-human-paced. On change, replace the local `form` rows wholesale and rebuild the in-memory
-`FormRegistry`. Forms open in the UI are **not** hot-swapped mid-edit; the new definition
-applies on next open.
+Poll `GET /config?since_rev=<n>` every 60 s and on app focus; a `304` means nothing
+changed. Config is tiny and human-paced, so the refresh is wholesale rather than a delta.
+
+`ConfigDelta` carries two lists, and **the order they are saved in is load-bearing**:
+
+```rust
+if !delta.fields.is_empty() { store.save_fields(&delta.fields)?; }   // fields first
+for form in &delta.forms   { store.save_form(form, delta.config_rev)?; }
+store.set_sync_state("config_rev", &delta.config_rev.0.to_string())?;
+```
+
+`delta.fields` is **every** field that exists, including ones placed in no form. A form can
+only ever describe *placed* fields, so without that list a client has no route back to a
+field a coordinator has unplaced — its values sit in `field_value` with nothing referencing
+them. The local `field` table is what backs the builder's "Unplaced fields" drawer and what
+lets that drawer survive a restart ([06-FORM-BUILDER.md](06-FORM-BUILDER.md)). Fields go
+first because a form references them.
+
+The values themselves are never at risk either way: they are keyed by `field_id`, which is
+global and never reused, so unplacing a field hides it without touching a single row.
+
+Forms open in the UI are **not** hot-swapped mid-edit; the new definition applies on next
+open.
 
 ### Caseload pre-sync
 
 **This is the mechanism that makes R15 true.** On login, and every 5 minutes thereafter:
 
-1. `GET /cases?assignee=me` — the full assigned list, paged.
-2. For each case not present locally, or whose server `rev` exceeds local `synced_rev`,
+1. `GET /cases?assignee=me` — the full assigned list, paged 200 at a time, following
+   `cursor` while `has_more`.
+2. **Read the local `synced_rev` before upserting the case summary.** `upsert_case` writes
+   the server's `rev` into the local row, so upserting first makes every case look current
+   and nothing is ever pulled. This ordering is the difference between a working pre-sync
+   and one that silently fetches nothing.
+3. For each case whose server `rev` exceeds that local `synced_rev`,
    `GET /cases/{id}/values?since_rev=<local synced_rev>`.
-3. Apply to local SQLite, skipping any row where `pending = 1`.
+4. Apply to local SQLite, skipping any row where `pending = 1`.
 
 Sizing: a realistic caseload of a few hundred cases × ~1000 values × ~60 bytes ≈
 **tens of MB**. The user only ever opens cases that are already local, so a cache miss is
@@ -219,6 +245,20 @@ other, and when.
 | Crash mid-edit | At most the current keystroke is lost — local write is synchronous and transactional |
 | Local DB unopenable | Report "cannot unlock local data". **Never** silently recreate; that would appear as total data loss |
 
+### Known gap: an edit made while its field is in flight
+
+`Store::confirm` clears `pending` and drops the outbox rows for the fields the server
+accepted. If the abstractor edited one of those fields *after* the batch was sent, the
+outbox row now holds the newer value, and dropping it discards that edit — the value stays
+in `field_value` with `pending` cleared, so nothing ever sends it.
+
+The store cannot detect this: it keeps no record of what was sent. Closing it needs either a
+sequence number on the outbox row that `confirm` carries, or an in-flight set held by the
+sync engine that `confirm` is filtered through. **Neither exists yet**, and no test covers
+the window. The exposure is narrow — it needs a keystroke inside one round trip on a field
+already in flight — but it is a silent lost update, which is the one failure class this
+design is otherwise built to rule out.
+
 ## App close
 
 If `outbox` is non-empty, closing shows a modal offering **Retry now** or
@@ -227,12 +267,25 @@ launch). Unlike the previous network-only design, quitting with pending work los
 
 ## Testing
 
-`MockTransport` + `FakeClock` cover, in `medatat-sync`:
+`medatat_testkit::MockTransport` covers, in `medatat-sync` (12 tests):
 
-- Outbox coalescing: 40 `set` calls on one field produce one outbox row.
+- A local edit reaches the server, and an empty outbox makes no network call at all.
+- Outbox coalescing: repeated `set` calls on one field produce one round trip.
 - Disjoint-field concurrency: two clients editing different fields both apply.
-- Same-field race produces exactly one conflict row, and the loser's outbox row is dropped.
+- A same-field race produces exactly one conflict row, and does not spin the drain loop.
 - `pending = 1` rows are never clobbered by an inbound server value.
-- Backoff schedule matches expectation across 10 simulated failures.
 - Offline → queued → reconnect → drained, with no lost or duplicated writes.
-- A crash between value write and outbox insert is impossible (single transaction).
+- A transient failure is retried rather than dropped.
+- Caseload sync pulls assigned cases and their values.
+- Config sync stores forms, records the revision, and persists **unplaced** fields.
+
+Backoff is covered separately, as a pure function in `backoff.rs`: exponential growth to the
+60 s cap, never zero, deterministic per seed, and jitter that actually spreads clients apart.
+`SyncEngine` holds no clock — `delay_for` is pure and the caller owns the cadence — so these
+are unit tests over an input, not a simulated timeline. `medatat-testkit` does provide a
+`FakeClock`, but nothing in `medatat-sync` currently needs one.
+
+A crash between the value write and the outbox insert is impossible by construction — one
+transaction — and is asserted in `medatat-store` rather than here.
+
+**Not covered:** the in-flight re-enqueue window described under *Known gap* above.

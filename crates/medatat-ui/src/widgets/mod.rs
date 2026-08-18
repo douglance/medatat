@@ -300,22 +300,36 @@ pub fn subscribe<V: 'static>(
     }
 }
 
-/// The `Cmd/Ctrl-F` field palette's query box.
+/// A single-line text box.
 ///
-/// A newtype rather than a bare `Entity<InputState>` so the form layer can hold, focus, and
-/// subscribe to it without naming a `gpui-component` type.
-pub struct PaletteInput(Entity<InputState>);
+/// A newtype rather than a bare `Entity<InputState>` so views above this module can hold,
+/// focus, read, and subscribe to a text field without naming a `gpui-component` type.
+pub struct LineInput(Entity<InputState>);
 
-impl PaletteInput {
-    pub fn new(window: &mut Window, cx: &mut App) -> Self {
-        PaletteInput(cx.new(|cx| InputState::new(window, cx).placeholder("Find field…")))
+impl LineInput {
+    pub fn new(placeholder: &str, window: &mut Window, cx: &mut App) -> Self {
+        let ph = placeholder.to_string();
+        LineInput(cx.new(|cx| InputState::new(window, cx).placeholder(ph)))
+    }
+
+    /// Seeded with a starting value, for editing something that already exists.
+    pub fn with_value(placeholder: &str, value: &str, window: &mut Window, cx: &mut App) -> Self {
+        let ph = placeholder.to_string();
+        let v = value.to_string();
+        LineInput(cx.new(|cx| {
+            let s = InputState::new(window, cx).placeholder(ph);
+            if v.is_empty() { s } else { s.default_value(v) }
+        }))
     }
 
     pub fn focus_handle(&self, cx: &App) -> FocusHandle {
         self.0.focus_handle(cx)
     }
 
-    /// Fires on every keystroke in the query box with the current text.
+    /// Fires on every keystroke with the current text.
+    ///
+    /// Callers on a hot path must not `cx.notify()` a large parent from here — see the
+    /// note in `form/palette.rs` for why that is the rule and not a suggestion.
     pub fn subscribe<V: 'static>(
         &self,
         window: &Window,
@@ -332,6 +346,25 @@ impl PaletteInput {
             },
         )
     }
+
+    /// Fires when the edit is finished — blur or Enter. Committing on this rather than on
+    /// every keystroke is what keeps a rename from re-validating a half-typed name.
+    pub fn subscribe_commit<V: 'static>(
+        &self,
+        window: &Window,
+        cx: &mut Context<V>,
+        on_commit: impl Fn(&mut V, String, &mut Window, &mut Context<V>) + 'static,
+    ) -> Subscription {
+        cx.subscribe_in(
+            &self.0,
+            window,
+            move |this, ent, ev: &InputEvent, window, cx| {
+                if matches!(ev, InputEvent::Blur | InputEvent::PressEnter { .. }) {
+                    on_commit(this, ent.read(cx).value().to_string(), window, cx);
+                }
+            },
+        )
+    }
 }
 
 /// The theme's focus/selection ring. Exposed so views above this module can draw selection
@@ -340,9 +373,9 @@ pub fn ring_color(cx: &App) -> gpui::Hsla {
     cx.theme().ring
 }
 
-/// A bare query box, for the worklist filter. Same input type as the palette so the two
-/// search surfaces in the app cannot drift apart.
-pub fn render_filter(input: &PaletteInput) -> AnyElement {
+/// A bare single-line input. Same type everywhere, so the app's text boxes cannot drift
+/// apart in behaviour.
+pub fn render_filter(input: &LineInput) -> AnyElement {
     Input::new(&input.0).into_any_element()
 }
 
@@ -351,7 +384,7 @@ pub fn render_filter(input: &PaletteInput) -> AnyElement {
 /// Rendered as an overlay so it never displaces the form underneath — a palette that
 /// reflows 300 fields on open would be worse than no palette.
 pub fn render_palette(
-    palette: &PaletteInput,
+    palette: &LineInput,
     matches: &[(FieldIdx, String)],
     on_choose: &OnChoose,
 ) -> AnyElement {
@@ -457,6 +490,14 @@ pub fn render_field(
     if let Some(err) = &spec.error {
         f = f.description(SharedString::from(err.to_string()));
     }
+
+    // R9/R10: a stored code whose option has since been removed must still be *visible*.
+    // Rendering nothing would hide real data behind a config change — worse than the
+    // removal itself, because the value is still there and still exported.
+    let orphan_code = matches!(spec.kind, WidgetKind::Radio | WidgetKind::Select)
+        .then(|| spec.value.as_str())
+        .filter(|v| !v.is_empty() && index_of_code(spec, Some(v)).is_none())
+        .map(|v| v.to_string());
 
     let widget = match (spec.kind, state) {
         (WidgetKind::Numeric, WidgetState::Input(e)) => NumberInput::new(e).into_any_element(),

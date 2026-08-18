@@ -282,7 +282,11 @@ independently** — that is the eventual-consistency seam.
 
 ## Bulk endpoints (seeding and export)
 
-Admin-only. Used by `medatat-cli` for the perf corpus and by the export path.
+Admin-only. **`medatat-cli` does not use `/bulk/cases` for the perf corpus** — `medatat
+push` writes through the ordinary `POST /cases` and `POST /cases/{id}/values` path
+instead, because a whole-case bulk write would stamp every row with the same `rev` and
+both per-field conflict detection and `since_rev` delta reads are benchmarked against the
+spread of revs across a case.
 
 | Method | Path | Purpose |
 |---|---|---|
@@ -292,10 +296,16 @@ Admin-only. Used by `medatat-cli` for the perf corpus and by the export path.
 
 Two of these do less than their names suggest, and a client should not assume otherwise:
 
-- **`/bulk/cases` carries no values.** It creates `case_index` rows and nothing else — it
-  does not fan out to the Durable Objects, so the cases it creates are empty until
-  something writes to them through `POST /cases/{case_id}/values`. Seeding a corpus with
-  values is therefore still a per-case round trip.
+- **`/bulk/cases` carries no values, and does not initialise the Durable Object.** It
+  inserts `case_index` rows and nothing else. Unlike `POST /cases`, it does not call the
+  DO, so a bulk-created case has an index row and **no DO metadata** — `meta.mrn`,
+  `meta.form_id`, and `meta.case_id` are never set. Values still write correctly, because
+  the DO creates its schema lazily on the first write, but the object does not know which
+  case it is. Anything that walks DOs rather than the index — `POST /admin/reindex`, when
+  it exists — has to account for that. Fanning `/init` out to 100 objects inside one
+  request would reintroduce the CPU-budget problem that `/admin/reindex` is already
+  blocked on, so the seeder creates cases through `POST /cases` instead, which does both
+  and costs nothing extra at one request per case.
 - **`/bulk/export` exports the index, not the data.** Every line is a `CaseSummary`
   — `case_id`, `mrn`, `form_id`, `assignee`, `rev`, `updated_at` — because the values live
   in the DOs and are not reachable from a D1 scan. It is a manifest, not a data export.

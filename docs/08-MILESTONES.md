@@ -155,6 +155,29 @@ The full acceptance script in
 
 ---
 
+### M5 status — 2026-08-18
+
+Acceptance items **1–6, 8 and 9 are implemented**, covered by 45 headless tests in
+`medatat-ui` plus the pure logic in `medatat_core::builder`.
+
+**Item 9 is verified by execution, not construction.** Three of those tests go through a
+real SQLite store: save a form, remove a placement, reopen from disk, and assert the field
+is still findable by id and key; place it again and watch the drawer empty itself; after a
+Replace, confirm the drawer holds the *original* rather than the replacement. That is the
+Unplaced drawer surviving a restart, actually run.
+
+**Item 7 is not closable here.** "An abstractor on another machine opens the form within
+60 s" needs two machines and live sync.
+
+Two deliberate omissions, both to be resolved by login and the server config write path:
+`⌘B` opens the builder with no `role = admin` gate (the API enforces it regardless, and the
+spec's position is that the UI is not the enforcement point), and every save writes
+`ConfigRev(1)` because nothing allocates config revisions client-side.
+
+**The standing caveat still applies to the rest of it: no button in the builder has ever
+been clicked.** The screen on the build machine is locked. Items 1–6 and 8 are verified by
+construction and headless tests; only item 9 has been executed against real storage.
+
 ## M6 — Worklist, caseload pre-sync, keyboard model
 
 ### Demo

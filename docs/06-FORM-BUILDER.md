@@ -137,6 +137,13 @@ Rows of `code` + `label`, reorderable, with add and remove. `code` is what gets 
 `code (unknown option)` in a warning style. The editor warns before removing an option, but
 does not prevent it — a coordinator correcting a mistake must be able to.
 
+**The display half of that rule is as load-bearing as the non-deletion half**, and is easier
+to get wrong because nothing fails. An implementation that preserves the value but renders
+an unmatched code as *nothing* — no radio selection, an empty select — is worse than the
+removal that caused it: the data is intact in `field_value` and still exports, but the
+abstractor sees a blank field and has no way to know a value is there. Render the raw code
+rather than nothing.
+
 Option lists here are for small vocabularies. See
 [10-LIMITATIONS.md](10-LIMITATIONS.md#3-large-coded-option-lists-are-not-supported).
 

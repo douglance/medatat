@@ -8,7 +8,7 @@
 //! As with the form, a keystroke in the filter box must not re-render the world: the filter
 //! input is its own entity, so typing re-renders the row list and nothing above it.
 
-use crate::widgets::{self, PaletteInput};
+use crate::widgets::{self, LineInput};
 use gpui::{
     AnyElement, App, Context, FocusHandle, FontWeight, InteractiveElement as _, IntoElement,
     ParentElement as _, Render, ScrollHandle, SharedString, StatefulInteractiveElement as _,
@@ -55,7 +55,7 @@ pub struct WorklistView {
     visible: Vec<usize>,
     selected: usize,
     sort: Sort,
-    filter: PaletteInput,
+    filter: LineInput,
     _filter_sub: Subscription,
     query: String,
     focus: FocusHandle,
@@ -73,7 +73,7 @@ impl WorklistView {
         cx: &mut Context<Self>,
     ) -> Self {
         let all = load_rows(store, assignee, limit);
-        let filter = PaletteInput::new(window, cx);
+        let filter = LineInput::new("Filter cases…", window, cx);
         let sub = filter.subscribe(window, cx, |this: &mut Self, text, _, cx| {
             this.query = text;
             this.rebuild();

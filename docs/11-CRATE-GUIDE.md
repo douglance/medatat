@@ -150,10 +150,8 @@ Delta sync. **Must not depend on `reqwest`** — that is what makes it testable 
 src/
   lib.rs
   transport.rs    Transport trait, TransportError
-  engine.rs       SyncEngine: drain loop, backoff
-  caseload.rs     pre-sync scheduler (the mechanism behind R15)
-  config.rs       config polling and FormRegistry rebuild
-  conflict.rs     conflict classification and resolution application
+  engine.rs       SyncEngine: drain pass, caseload pre-sync, config refresh, conflicts
+  backoff.rs      delay_for(attempts, seed) — exponential, capped, jittered
 ```
 
 ```rust
@@ -169,14 +167,18 @@ pub trait Transport: Send + Sync + 'static {
 
 pub struct SyncEngine<T: Transport> { /* … */ }
 impl<T: Transport> SyncEngine<T> {
-    pub fn new(store: Arc<Store>, transport: T, clock: Arc<dyn Clock>) -> Self;
-    pub async fn run(self, shutdown: ShutdownSignal);   // the drain loop
+    pub fn new(store: Arc<Store>, transport: T) -> Self;
+    pub async fn drain_once(&self) -> Result<DrainReport, SyncError>;
     pub async fn sync_caseload(&self, assignee: &str) -> Result<CaseloadStats, SyncError>;
-    pub fn status(&self) -> SyncStatus;                 // { unsynced: usize, state: … }
+    pub async fn sync_config(&self) -> Result<Option<ConfigRev>, SyncError>;
+    pub fn next_delay(&self) -> Result<Option<Duration>, SyncError>;
+    pub fn status(&self) -> Arc<SyncStatus>;   // unsynced, conflicts, SyncState
 }
-
-pub trait Clock: Send + Sync { fn now(&self) -> DateTime<Utc>; }   // FakeClock in tests
 ```
+
+**The engine owns no timer and no clock.** It exposes one pass, not a `run` loop, and the
+caller decides the cadence from `next_delay`. That is what keeps it drivable from a test
+without a simulated timeline, and it is why there is no `Clock` trait here.
 
 **Rules.** Backoff is `min(60s, 2^attempts * 500ms) ± 20%` jitter — the jitter is not
 optional, or every client that dropped together retries together.
@@ -289,15 +291,36 @@ so it tests without workerd.
 
 ```
 src/
-  main.rs       `seed` is handled locally; everything else goes to the fetch gateway
+  main.rs       `seed` and `push` are handled locally; everything else goes to the gateway
   fetch.rs      impl incurs::fetch::FetchHandler over reqwest
   seed.rs       corpus generation to a directory
+  push.rs       corpus generation INTO a running Worker, through the ordinary write path
 ```
 
 There is **no `dev` subcommand**. A sign-in code is delivered only by email and only its
 sha256 is stored, so nothing can read one back; `scripts/smoke.sh` takes it in `SMOKE_CODE`
-and skips the authenticated half when it is absent. `seed` writes a corpus to disk and does
-not upload it — `POST /bulk/cases` creates index rows without values.
+and skips the authenticated half when it is absent.
+
+`seed` writes a corpus to disk. `push` writes one into a Worker, and is what makes Bench 4
+runnable — before it, nothing could get a corpus in, because `POST /bulk/cases` creates
+index rows without values.
+
+```
+medatat push --cases 1000 --fields 1000 --batch 50   # MEDATAT_API, MEDATAT_TOKEN (admin)
+```
+
+Three things about `push` are load-bearing rather than incidental:
+
+1. **It publishes the generated form to `/config` first.** A form generated in-process
+   exists nowhere on the server, and the write path re-validates every value against D1, so
+   an unpublished form makes every single value a 404.
+2. **It writes in batches, not one shot.** `--batch 50` over a 1,000-field case produces 20
+   revs. A whole-case write would stamp every row `rev 1`, and both per-field conflict
+   detection and `since_rev` delta reads are benchmarked against the spread — a flat corpus
+   would make delta sync unbenchmarkable *and* flatter the numbers.
+3. **It namespaces every key it creates.** `field.key` and `form.key` are `UNIQUE` in D1 and
+   the generator's keys are a pure function of position (`f0000_text`), so without a
+   per-run prefix the second run dies on a constraint violation.
 
 ```rust
 pub struct HttpFetch { base: String, client: reqwest::Client, default_token: Option<String> }
