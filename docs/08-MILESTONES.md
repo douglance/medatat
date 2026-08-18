@@ -50,8 +50,17 @@ rework:
 - [ ] **Bench 2** — 300-field write, one transaction: **p99 < 10 ms**.
 - [ ] **Bench 3** — open-to-first-paint over 200 cases: **p99 < 50 ms**.
 - [ ] **Bench 4** — cold-DO full-case sync measured and recorded (no threshold).
-- [ ] Seeding throughput measured on **1,000 cases**, with a full-corpus extrapolation of
-      time and cost written into the bench output.
+- [x] Seeding throughput measured on **1,000 cases**, with a full-corpus extrapolation.
+      **1.90 cases/sec** through the normal write path: 1,000 ≈ 9 min, 100,000 ≈ 14.6 h
+      serial. The remedy is client-side concurrency in `medatat-cli`.
+- [ ] **Bench 4 no longer blocks on the 100k corpus.** "Cold" is a property of time and
+      eviction, not corpus size — each DO is an independent database, so 20–50 cases left
+      past the eviction window answer it. See [07-TESTING.md](07-TESTING.md#bench-4-detail). Run it with
+      `medatat push --cases 1000 --fields 1000`, which writes through the ordinary
+      `POST /cases` + `POST /cases/{id}/values` path and prints the projection. Not
+      `/bulk/cases`: that carries no values, and a whole-case bulk write would stamp every
+      row with the same `rev`, which is the spread Bench 4 and delta sync are measured
+      against.
 - [ ] `send_email` from `noreply@cetify.email` delivers to a real inbox.
 - [ ] **`worker-build --profile release-wasm` succeeds.** A green `cargo build --target
       wasm32-unknown-unknown` is necessary but **not sufficient** — the bundle step runs

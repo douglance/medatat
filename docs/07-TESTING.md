@@ -70,15 +70,50 @@ regression is attributable, not just visible.
 
 ### Bench 4 detail
 
-Also answers a question that must not be discovered late: **is seeding 100k DOs × 1000
-values feasible at all?**
+**Bench 4 does not need a large corpus, and an earlier version of this document wrongly
+implied it did.**
 
-Measure throughput and cost on **1,000 cases first**, extrapolate, and record the estimate
-in the bench output before M7 commits to the full corpus. If the extrapolation says days or
-hundreds of dollars, that is a finding to act on, not to absorb.
+"Cold" is a property of *time and eviction*, not of corpus size. Every Durable Object is an
+independent SQLite database with its own storage, so a cold read of DO #1 and a cold read of
+DO #99,999 are the same operation over the same ~1,000 values. Adding 99,950 neighbours does
+not make any individual object colder, larger, or slower to wake. What makes it cold is
+elapsed time without traffic.
 
-Cold-DO measurement requires a DO idle beyond the eviction window (70–140 s). Seed cases,
-wait, then read.
+So Bench 4 wants **20–50 full-size cases at the real 1,000 fields, left untouched past the
+eviction window (70–140 s), then read.** That is minutes of seeding, repeatable often enough
+to actually gate on.
+
+### What the 100k corpus is actually for
+
+Conflating the two experiments made M1 depend on a 15-hour job it never needed. They are
+separate:
+
+| Question | Needs |
+|---|---|
+| Does a hibernated DO read back quickly? (Bench 4) | 20–50 cold cases. Minutes |
+| Does the topology hold at 100k cases? (R16, M7) | Mostly answerable by measuring per-case storage on a small corpus and multiplying — the DO sizing in [02-DATA-MODEL.md](02-DATA-MODEL.md) already is that extrapolation |
+| How does D1 `case_index` behave at 100k rows? | Genuinely needs the rows — but only **index** rows, which carry no values. `POST /bulk/cases` creates exactly those, cheaply. This is the one job that endpoint is well shaped for |
+
+**Measured throughput, 2026-08-18:** 1.90 cases/sec through the normal `POST /cases` +
+`POST /cases/{id}/values` path, after an 8.1 s form publish. 1,000 cases ≈ 9 minutes;
+100,000 ≈ **14.6 hours** serial. The remedy is client-side concurrency in `medatat-cli` —
+N cases in flight, no new server surface — and the honest first question for M7 is whether
+the full corpus needs to exist at all.
+
+**Seeding goes through the normal write path deliberately.** A bulk endpoint that writes a
+whole case in one shot stamps every row with the same `rev`. Per-field conflict detection
+and `since_rev` delta reads both key off that spread, so a corpus where every row is rev 1
+would make delta sync unbenchmarkable *and* flatter the numbers — a benchmark that is both
+wrong and reassuring.
+
+### A local-emulator limit worth knowing
+
+`wrangler dev` keeps every Durable Object resident in **one Node process**. A 1,000-case
+push died at case 249 with V8 heap exhaustion at ~1.3 GB — 249 live DOs × 1,000 values in a
+single heap. This is a miniflare artifact and says nothing about production, where DOs are
+distributed and hibernate ([ADR-0001](adr/0001-durable-object-per-case.md)). Run local
+seeding with `NODE_OPTIONS=--max-old-space-size=12288` or larger. It caps what can be
+measured locally; it is not a scale signal.
 
 ---
 
