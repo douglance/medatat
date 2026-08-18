@@ -131,12 +131,21 @@ jobs:
   # to keep working so that turning PHI on later stays a switch, not a project.
   # --------------------------------------------------------------------------
   phi:
+    # M8 asks for `--features phi` clean on all three platforms, so it is checked on all
+    # three rather than asserted from one. `phi` turns on rusqlite/bundled-sqlcipher, which
+    # compiles SQLCipher from source and links OpenSSL -- the part most likely to behave
+    # differently per platform, and the reason this is a matrix and not a note.
     name: phi (feature build + test)
     needs: preflight
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/linux-deps
+        if: runner.os == 'Linux'
       - run: rustup show
       - uses: Swatinem/rust-cache@v2
         with:
@@ -146,7 +155,9 @@ jobs:
 
       - name: Test with PHI protections on
         env:
-          VK_ICD_FILENAMES: /usr/share/vulkan/icd.d/lvp_icd.x86_64.json
+          # Software Vulkan, for the headless GPUI tests. Linux only -- macOS and Windows
+          # have their own working backend and this variable would point at nothing.
+          VK_ICD_FILENAMES: ${{ runner.os == 'Linux' && '/usr/share/vulkan/icd.d/lvp_icd.x86_64.json' || '' }}
         run: cargo test --workspace --features phi
 
   # --------------------------------------------------------------------------
