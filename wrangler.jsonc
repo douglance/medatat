@@ -1,7 +1,9 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "medatat",
-  "main": "build/worker/shim.mjs",
+  // Paths are relative to this file, which lives at the workspace root. worker-build
+  // writes into the crate's own directory, so both point there.
+  "main": "crates/medatat-worker/build/worker/shim.mjs",
   "compatibility_date": "2026-08-01",
   "account_id": "88f9cbf5c4f4e217079bcbf0ca6cb181",
 
@@ -11,7 +13,10 @@
   // wrappers`. release-wasm inherits release, turns strip off, and sets opt-level = "z".
   // See the profile comment in Cargo.toml.
   "build": {
-    "command": "cargo install -q worker-build && worker-build --profile release-wasm"
+    // The trailing path argument is load-bearing: wrangler runs this from the
+    // directory holding wrangler.jsonc, and the root Cargo.toml is a [workspace]
+    // with no [package], so a bare `worker-build` fails with "missing field package".
+    "command": "cargo install -q worker-build && worker-build --profile release-wasm crates/medatat-worker"
   },
 
   "d1_databases": [
@@ -19,7 +24,9 @@
       "binding": "DB",
       "database_name": "medatat",
       // wrangler d1 create medatat
-      "database_id": "REPLACE_AFTER_D1_CREATE"
+      "database_id": "REPLACE_AFTER_D1_CREATE",
+      // Relative to this file. Migrations live with the crate that owns the schema.
+      "migrations_dir": "crates/medatat-worker/migrations"
     }
   ],
 
