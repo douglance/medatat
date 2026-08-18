@@ -533,17 +533,16 @@ Worth knowing before a green run is read as more than it is:
   `send_email` requires. Every assertion still holds — `/auth/request` stores the code in KV
   *before* it attempts the send — but nothing in CI exercises the mail path. A green smoke
   job is not evidence that email works.
-- **The ubuntu runner's workerd.** It downloads a different platform binary than the one
-  verified locally on macOS. If it misbehaves the smoke job fails at "Start the Worker" with
-  the log attached, which is the cleanest failure arrangeable without a runner to test on.
+- **Outbound mail, again, from the other direction.** Nothing anywhere in CI or in the local
+  smoke run sends an email. The magic-code path is exercised by reading the code straight out
+  of KV, which is exactly what a real user cannot do.
 - **Anything requiring a deployment.** Real seeding throughput and the Durable Object
   hibernation wake path are both unmeasurable locally and therefore unmeasurable in CI.
 
 ## CI pipeline
 
-`.github/workflows/ci.yml` exists and is committed. **It has never run** — the repository
-has no remote yet — so until a green run has been seen, every gate is still enforced by
-running it yourself.
+`.github/workflows/ci.yml` runs on every push. **All twelve jobs are green** as of run
+`32143065789` (2026-08-18) — the first fully green matrix.
 
 ```yaml
 # .github/workflows/ci.yml
@@ -555,15 +554,60 @@ jobs:
   wasm:       # ubuntu — cross-compile medatat-worker, then `worker-build`, then bundle size
   bench:      # ubuntu — cargo bench, fail on a Bench 1 or 2 threshold regression
   gpui-build: # macos, ubuntu, windows — cargo build -p medatat-ui (compile guard)
+  smoke:      # ubuntu — scripts/smoke.sh end-to-end against `wrangler dev --local`
 ```
+
+### What getting there cost, and what it says about the tests
+
+Three of the four defects that kept this matrix red were in the harness, not the code. That
+ratio is worth remembering before reading a red job as a bug report.
+
+- **The GUI keyboard tests were macOS-shaped.** They hardcoded `cmd-f` while the bindings use
+  `secondary()`, so they could only ever pass on macOS. Fixed with a `secondary(key)` helper.
+- **A sync test asserted more than it waited for.** It waited for the *first* transport call,
+  then asserted that *two* specific calls had happened. Passed on macOS and Windows, failed
+  on Linux, and had nothing to do with the behaviour under test.
+- **`rusqlite` linked system SQLite**, which Windows does not ship. The `bundled` feature
+  fixed a `LNK1181` that looked like a toolchain problem.
+- **The dev server restarted itself into a port collision.** The genuine bug of the four —
+  see below.
+
+### The failure that was not what it said it was
+
+The smoke job failed for two days with `wrangler dev did not serve /health within 240s`.
+Neither cause had anything to do with a timeout.
+
+`wrangler.jsonc`'s custom build ran `cargo install -q worker-build` unconditionally. That is
+not idempotent: with the binary on `PATH` but absent from `~/.cargo/.crates.toml`, cargo
+rebuilds it and then refuses with ``binary `worker-build` already exists in destination``,
+exit 101 — surfaced by wrangler as the whole dev server failing to start. CI hit it the
+instant a cache restored the binary without the registry recording it.
+
+Underneath that, wrangler's default watch directory covered the directory `worker-build`
+writes into, so **the build output retriggered the watcher**. wrangler restarted, the new
+instance bound before the old one released the socket, and workerd died with `Address
+already in use`. It reads as another process holding the port; it is the same server racing
+itself, and it reproduces on any port — confirmed on three. `watch_dir` is now scoped to
+`crates/medatat-worker/src`.
+
+Two lessons, both cheap to reuse:
+
+1. **A health-check loop must notice a dead process.** Waiting out the full window buries the
+   real error under four minutes of silence. The loop now `kill -0`s the child and fails in
+   seconds with the log — which is how the `cargo install` error was found at all.
+2. **Reproduce locally before theorising.** Two rounds of plausible reasoning about runner
+   speed produced two wrong fixes. Running `wrangler dev` on this machine produced the
+   actual cause in one attempt.
 
 `preflight` exists because Cargo resolves the whole workspace graph even for a single-crate
 build, so one unresolvable dependency fails every job at once; catching it in one place
 turns six confusing failures into one actionable message.
 
-There is no `worker` job yet. `scripts/smoke.sh` needs a sign-in code that only email
-delivers, and `wrangler.jsonc` still carries placeholder D1 and KV ids, so the job would be
-permanently red — which teaches everyone to ignore red. It arrives when both are resolved.
+The `smoke` job resolves what an earlier draft of this document called a blocker. The
+sign-in code does not need email: `medatat dev last-code` reads it out of the local KV
+emulator, so the whole magic-code flow runs headlessly. `wrangler.jsonc` carries real D1 and
+KV ids. The full suite — 12 assertions, health through per-field conflict detection — passes
+against `wrangler dev --local` both in CI and locally.
 
 Cache `~/.cargo/git` aggressively — Cargo clones ~1 GB of Zed history for the `gpui`
 dependency. Set `CARGO_NET_GIT_FETCH_WITH_CLI=true`.

@@ -12,19 +12,24 @@ tri-platform viability and the latency claim — are settled in the first two we
 
 | | | |
 |---|---|---|
-| **M0** Platform bring-up | 🟡 | macOS verified end to end. **Windows: `medatat-core`, `-store`, `-sync` type-check for `x86_64-pc-windows-msvc`**; the GPUI crate cannot be checked from macOS (needs MSVC `lib.exe`). Linux unattempted — Docker unavailable on this machine |
+| **M0** Platform bring-up | ✅ | **All three platforms build and test green in CI** (run `32143065789`, 2026-08-18): `gpui-build` and `cargo test --workspace` both pass on macOS, Windows and Linux. Linux needed `libxkbcommon-x11-dev`; Windows needed `rusqlite`'s `bundled` feature, having no system SQLite to link |
 | **M1** Perf gate | ✅ | Benches 1–2 measured; deployed, 407 KB gz, **startup 2 ms**; throughput **0.12 cases/s** and DO wake **0.4–1.0 s**, both measured in production |
 | **M2** Core + store | ✅ | Validated at 500k rows — the margin is flat |
 | **M3** Worker + sync | ✅ | **Deployed to `medatat.doug-lance.workers.dev`**; contract verified against production |
 | **M4** Runtime renderer | ✅ | All seven field kinds, 1–3 columns |
 | **M5** Form builder | 🟡 | Items 1–6, 8, 9 done. Item 7 needs two machines and live sync |
-| **M6** Worklist + keyboard | 🟡 | Built and unit-tested; **never exercised on Windows or Linux**, and key routing is demonstrably platform-specific |
+| **M6** Worklist + keyboard | 🟡 | Built and unit-tested; the GUI suite now **runs green on all three platforms** — the keyboard tests were themselves macOS-shaped until 2026-08-18 and could only ever have passed there. Still **never driven by a human on Windows or Linux**, which is what the amber is for |
 | **M7** Scale run | 🟡 | Client side done (Bench 5, 500k rows). Server side measured; **concurrency shipped and measured not to help — 1.75× ceiling, server-bound.** R16 rests on per-case extrapolation, not a built corpus |
 | **M8** Packaging | 🟡 | **macOS `.app` built and verified launching against the deployed Worker** (`packaging/bundle-macos.sh`, 16 MB). Unsigned — needs an Apple Developer identity. Windows/Linux installers need those platforms |
 
-**The three things blocking the amber rows are not code**: a Cloudflare deployment (D1 + KV
-on the user's account), machines running Windows and Linux, and CI actually executing, which
-needs a remote. Everything reachable without those is done.
+**Two of the three original blockers are gone.** The Cloudflare deployment is live, and CI
+runs on every push with all twelve jobs green. What remains is genuinely not code: a human
+driving the app on Windows and Linux, a second machine for live-sync conflict testing, and an
+Apple Developer identity for signing.
+
+A green matrix is narrower than it looks. CI builds the UI on all three platforms and runs
+its tests headlessly; it does not open a window, and no one has typed into this application
+on anything but macOS.
 
 **What is verified how** is set out in
 [00-REQUIREMENTS §Verification status](00-REQUIREMENTS.md#verification-status--2026-08-18).
