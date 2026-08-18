@@ -258,6 +258,41 @@ Never commit secrets. `.dev.vars` is gitignored and holds local-only values.
 
 ---
 
+## Packaging
+
+Each script builds the artifact for the platform it runs on, from a release binary. None of
+them cross-compiles: build the artifact on the OS it targets. CI does exactly this in the
+`package` job and uploads all three.
+
+```bash
+cargo build --release -p medatat-ui       # every script needs this first
+
+./packaging/bundle-macos.sh               # dist/medatat.app
+./packaging/bundle-linux.sh               # dist/*.deb, and an AppImage if appimagetool is found
+pwsh ./packaging/bundle-windows.ps1       # dist/*.zip, and a setup.exe if makensis is found
+```
+
+The icon is generated, not hand-drawn, and the generator is committed beside its output:
+
+```bash
+python3 packaging/make-icon.py            # writes packaging/medatat.png and .ico
+```
+
+Regenerate it only if the design changes — the committed PNG and ICO are what the scripts
+consume, so a build never depends on Python being present.
+
+**Linux prerequisites.** `dpkg-dev` provides `dpkg-shlibdeps`, and the script refuses to run
+without it rather than emitting a hand-written `Depends` line. `lintian` is optional but
+runs as a gate when installed. `appimagetool` is a download rather than a package; point
+`APPIMAGETOOL` at it, or the AppImage step is skipped and the `.deb` is built regardless.
+
+**Nothing is signed.** macOS needs an Apple Developer identity and Windows an Authenticode
+certificate; the scripts report unsigned status explicitly rather than producing something
+that looks signed. Gatekeeper and SmartScreen will both warn on any machine but the one that
+built the artifact. There is no auto-update, and
+[08-MILESTONES](08-MILESTONES.md#why-auto-update-is-not-built) explains why that waits on
+signing rather than shipping unverified.
+
 ## Troubleshooting
 
 | Symptom | Cause | Fix |

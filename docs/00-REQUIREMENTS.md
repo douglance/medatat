@@ -78,7 +78,7 @@ corpus infeasible rather than merely unbuilt:
   and is server-bound, most likely on `case_index` contention in D1.
 - **Durable Object cold wake: 0.4–1.0 s**, against 0.16 s warm. That is three to six times
   the entire 200 ms budget of R13 — which is not a problem but a vindication: it is exactly
-  the reason [ADR-0002](adr/0002-local-first.md) keeps the network off the critical path.
+  the reason [ADR-0002](adr/0002-encrypted-local-sqlite.md) keeps the network off the critical path.
   A design that awaited the network could not meet R13 on a cold DO, ever.
 
 So R16 rests on per-case extrapolation from a 500k-row local corpus (Bench 5, where the R13
@@ -90,7 +90,7 @@ including the headless GPUI suite. That is narrower than it sounds: CI never ope
 and **no human has typed into this application on anything but macOS**. The keyboard tests
 were themselves macOS-shaped until 2026-08-18 — they hardcoded `cmd-` and could only ever
 have passed there — which is precisely the kind of assumption a green cross-platform job
-does not catch. See [10-LIMITATIONS §10](10-LIMITATIONS.md#10-keyboard-evidence-is-macos-only).
+does not catch. See [10-LIMITATIONS §10](10-LIMITATIONS.md#10-keyboard-evidence-was-macos-only--and-the-tests-not-the-app-were-the-problem).
 
 ## Explicitly out of scope
 

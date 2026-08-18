@@ -2,11 +2,13 @@
 //!
 //! ```bash
 //! cargo xtask lint-no-spinner
+//! cargo xtask lint-docs
 //! cargo xtask bump-gpui
 //! ```
 //!
 //! `anyhow`, `unwrap`, and `expect` are permitted here — see AGENTS.md.
 
+mod lint_docs;
 mod lint_no_spinner;
 
 use anyhow::Result;
@@ -26,6 +28,9 @@ enum Command {
     /// R15: fail if a spinner, progress bar, skeleton, shimmer, or "Loading…" appears in
     /// `medatat-ui`.
     LintNoSpinner,
+    /// Fail if any intra-`docs/` link points at a missing file or a heading that no
+    /// longer exists.
+    LintDocs,
     /// Bump the pinned `gpui` revisions in the root Cargo.toml, then build.
     BumpGpui,
 }
@@ -34,6 +39,7 @@ fn main() -> ExitCode {
     let cli = Cli::parse();
     let result = match cli.command {
         Command::LintNoSpinner => lint_no_spinner_cmd(&workspace_root()),
+        Command::LintDocs => lint_docs_cmd(&workspace_root()),
         Command::BumpGpui => bump_gpui_cmd(),
     };
 
@@ -85,6 +91,31 @@ fn lint_no_spinner_cmd(root: &Path) -> Result<bool> {
         "\nR15 says \"Ever\". Background status belongs in peripheral chrome — a count in \
          the window frame, a footer line — never where content goes. See \
          docs/05-UI-SPEC.md and docs/00-REQUIREMENTS.md."
+    );
+    Ok(false)
+}
+
+/// Returns whether every intra-doc link resolves. `false` becomes exit code 1.
+fn lint_docs_cmd(root: &Path) -> Result<bool> {
+    let docs = root.join("docs");
+    if !docs.is_dir() {
+        println!("no docs/ directory, skipping");
+        return Ok(true);
+    }
+
+    let broken = lint_docs::lint(&docs)?;
+    if broken.is_empty() {
+        println!("docs links clean: {}", docs.display());
+        return Ok(true);
+    }
+
+    eprintln!("{} broken intra-doc link(s):", broken.len());
+    for b in &broken {
+        eprintln!("  {b}");
+    }
+    eprintln!(
+        "\nA rotted link is worse than a missing one: it reads as a citation and leads \
+         nowhere, so the claim looks supported when the support is unreachable."
     );
     Ok(false)
 }
@@ -164,6 +195,10 @@ mod tests {
         assert!(matches!(
             Cli::parse_from(["xtask", "bump-gpui"]).command,
             Command::BumpGpui
+        ));
+        assert!(matches!(
+            Cli::parse_from(["xtask", "lint-docs"]).command,
+            Command::LintDocs
         ));
     }
 }

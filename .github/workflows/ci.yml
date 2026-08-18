@@ -92,6 +92,11 @@ jobs:
       # R15: no spinner, progress bar, skeleton, shimmer, or "Loading…" in medatat-ui.
       - run: cargo run -p xtask -- lint-no-spinner
 
+      # docs/ is the authoritative spec and cross-references itself heavily. A rotted
+      # link reads as a citation and leads nowhere: it looks like support for a claim
+      # that nobody can reach.
+      - run: cargo run -p xtask -- lint-docs
+
   # --------------------------------------------------------------------------
   # The main test matrix. Windows and Linux are the only way we ever learn
   # whether they work — ADR-0003 currently admits they are untested.

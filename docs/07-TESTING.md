@@ -16,12 +16,12 @@ is built on it.
 `criterion` in `medatat-testkit`. **Benches 1 and 2 gate today**; 3 and 4 do not yet, and
 each says so in its own module docs rather than asserting a number it cannot measure.
 
-| Bench | Measures | Target | Measured (macOS, 2026-08-17) | Proves | CI |
+| Bench | Measures | Target | Measured | Proves | CI |
 |---|---|---|---|---|---|
 | **1** | Local SQLite → `FormInstance`, 500 fields, warm | **< 5 ms** | **195 µs** ✅ | R13 | gate |
 | **2** | Local write of 300 changed fields, one transaction | **< 10 ms** | **5.2 ms** ✅ | R14 | gate |
 | **3** | Open-case intent → first painted frame, 200 cases | **p99 < 50 ms** | — | R13, R15 | not yet |
-| **4** | Full sync of one case from a **cold, hibernated** DO; seeding throughput | recorded | — | R16 | placeholder |
+| **4** | Full sync of one case from a **cold, hibernated** DO; seeding throughput | recorded | **wake 0.4–1.0 s vs 0.16 s warm; 0.12 cases/s** (production, 2026-08-18) | R16 | not in CI |
 | **5** | Benches 1 and 2 re-run against a **500-case caseload** (500k rows) | **≤ 1.5× the one-case control** | **0.95× read, 1.15× write** ✅ | R13, R14, M7 | gate |
 | **6** | WAL checkpoint stall: cost vs database size, vs WAL size, and as felt while typing | characterised | **flat in db size, linear in WAL, ~10 ms every ~128 saves** | R14 | diagnostic |
 

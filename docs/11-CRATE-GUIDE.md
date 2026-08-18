@@ -187,6 +187,31 @@ row. Never overwrite the focused field (the UI supplies a `deferred_merge` hook)
 
 ---
 
+## `medatat-http`
+
+The **only** implementation of `medatat-sync`'s `Transport`. It exists so that
+`medatat-sync` can stay free of `reqwest`: the trait keeps the sync engine testable against
+a mock, and this crate is where the one real HTTP client lives.
+
+```
+src/
+  lib.rs          HttpTransport, TokenHolder
+```
+
+Two details are load-bearing and both were found the hard way:
+
+- **The client is built lazily**, in a `OnceLock`. Constructing a `reqwest::Client` eagerly
+  needs a Tokio reactor, and there is none at the point where the transport is created.
+- **The sync loop runs on its own OS thread with its own current-thread Tokio runtime.**
+  GPUI's executor is not a Tokio reactor, so `reqwest` cannot run on it. This is why
+  `crate::sync::spawn` returns a handle to a real thread rather than a GPUI task, and why
+  the GUI test covering it waits on wall-clock time rather than the test clock.
+
+`TokenHolder` is shared with the UI so a sign-in updates the transport without rebuilding
+it.
+
+---
+
 ## `medatat-ui`
 
 The GPUI app. **The only crate that may `use gpui`.**
