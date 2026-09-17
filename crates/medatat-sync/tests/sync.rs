@@ -572,3 +572,100 @@ async fn config_sync_stores_forms_and_records_the_revision() {
     assert_eq!(f.store.sync_state("config_rev").unwrap(), Some("7".into()));
     assert!(f.store.load_form(def.form_id).is_ok());
 }
+
+// ------------------------------------------------- an expired session must be recorded
+
+/// A transport whose session has expired: every call is a 401.
+struct Expired;
+
+#[async_trait]
+impl Transport for Expired {
+    async fn config(&self, _: ConfigRev) -> Result<Option<ConfigDelta>, TransportError> {
+        Err(TransportError::Unauthorized)
+    }
+    async fn list_cases(&self, _: CaseQuery) -> Result<CasePage, TransportError> {
+        Err(TransportError::Unauthorized)
+    }
+    async fn get_values(&self, _: CaseId, _: CaseRev) -> Result<ValuePage, TransportError> {
+        Err(TransportError::Unauthorized)
+    }
+    async fn put_values(
+        &self,
+        _: CaseId,
+        _: PutValuesReq,
+    ) -> Result<PutValuesResp, TransportError> {
+        Err(TransportError::Unauthorized)
+    }
+}
+
+/// An expired session has to be *recorded*, not merely returned to the caller.
+///
+/// The UI's sync loop stops polling while the state is `NeedsAuth` and waits for a new
+/// token, so whether the app hammers a server that has already said no comes down entirely
+/// to whether this flag gets set.
+///
+/// It was set in exactly one place: `drain_once`. And `drain_once` returns before touching
+/// the network when the outbox is empty — which is the state of a freshly installed client,
+/// and of any client that has successfully synced everything. Those clients polled a 401
+/// every two seconds indefinitely. Observed in the shipped build: 38 log lines in 34
+/// seconds, all of them `session expired; re-auth needed`.
+#[tokio::test]
+async fn an_expired_session_is_recorded_when_the_outbox_is_empty() {
+    use medatat_sync::SyncState;
+
+    let store = Arc::new(Store::open_in_memory().unwrap());
+    let engine = SyncEngine::new(Arc::clone(&store), Expired);
+
+    // Precondition, and the whole reason for the bug: with nothing queued the drain never
+    // reaches the transport, so it cannot possibly learn that the session is gone.
+    engine.drain_once().await.expect("an empty outbox drains cleanly");
+    assert_ne!(
+        engine.status().state(),
+        SyncState::NeedsAuth,
+        "the drain short-circuits, so it is not the thing that can detect this"
+    );
+
+    assert!(engine.sync_caseload("me").await.is_err());
+    assert_eq!(
+        engine.status().state(),
+        SyncState::NeedsAuth,
+        "the caseload poll must record the expiry, or the loop retries it forever"
+    );
+}
+
+/// Same for the config poll, which runs on its own interval and would keep the retry loop
+/// alive on its own even if the caseload poll went quiet.
+#[tokio::test]
+async fn an_expired_session_is_recorded_by_the_config_poll_too() {
+    use medatat_sync::SyncState;
+
+    let store = Arc::new(Store::open_in_memory().unwrap());
+    let engine = SyncEngine::new(Arc::clone(&store), Expired);
+
+    assert!(engine.sync_config().await.is_err());
+    assert_eq!(engine.status().state(), SyncState::NeedsAuth);
+}
+
+/// And the flag must SURVIVE the rest of the pass.
+///
+/// Setting `NeedsAuth` is useless if the next call erases it. `drain_once` on an empty
+/// outbox used to assert `Idle` unconditionally, so every pass went: caseload 401 → set
+/// NeedsAuth → drain → reset to Idle → guard sees Idle → poll again in two seconds. The
+/// guard that exists to stop this never fired once, in a shipped build.
+#[tokio::test]
+async fn needs_auth_survives_a_drain_with_an_empty_outbox() {
+    use medatat_sync::SyncState;
+
+    let store = Arc::new(Store::open_in_memory().unwrap());
+    let engine = SyncEngine::new(Arc::clone(&store), Expired);
+
+    assert!(engine.sync_caseload("me").await.is_err());
+    assert_eq!(engine.status().state(), SyncState::NeedsAuth);
+
+    engine.drain_once().await.expect("empty outbox drains cleanly");
+    assert_eq!(
+        engine.status().state(),
+        SyncState::NeedsAuth,
+        "an empty outbox says nothing about whether the session is still valid"
+    );
+}

@@ -147,11 +147,22 @@ impl<T: Transport> SyncEngine<T> {
             let pending = self.store.unsynced_count()?;
             report.remaining = pending;
             self.status.set_unsynced(pending);
-            self.status.set_state(if pending == 0 {
-                SyncState::Idle
-            } else {
-                SyncState::Syncing
-            });
+            // Do NOT clobber NeedsAuth. `Idle` asserts two things — nothing to do, and
+            // nothing wrong — and an expired session is emphatically something wrong. It is
+            // cleared by a new token, never by an empty outbox.
+            //
+            // This line is what made the UI loop's NeedsAuth guard unreachable. The order
+            // each pass was: sync_caseload gets a 401 and sets NeedsAuth, then this runs
+            // microseconds later and resets it to Idle, then the guard checks the state and
+            // sees Idle. So the loop retried a 401 every two seconds forever, and the guard
+            // written to prevent exactly that never once fired.
+            if self.status.state() != SyncState::NeedsAuth {
+                self.status.set_state(if pending == 0 {
+                    SyncState::Idle
+                } else {
+                    SyncState::Syncing
+                });
+            }
             return Ok(report);
         }
 
@@ -290,7 +301,33 @@ impl<T: Transport> SyncEngine<T> {
     ///
     /// **This is the mechanism behind R15.** The user only ever opens cases that are
     /// already local, so a cache miss is not part of normal operation.
+    /// Records the session and connectivity state a transport failure implies.
+    ///
+    /// This used to happen only inside `drain_once`, which returns early when the outbox
+    /// is empty. A client with nothing queued therefore never discovered that its session
+    /// had expired: `SyncState` stayed `Idle`, the loop's `NeedsAuth` wait never engaged,
+    /// and the caseload and config polls retried a 401 every two seconds indefinitely.
+    /// The better-behaved the client -- nothing to push, everything synced -- the harder
+    /// it hammered a server that had already said no.
+    fn note_transport(&self, e: &SyncError) {
+        if let SyncError::Transport(t) = e {
+            match t {
+                TransportError::Offline => self.status.set_state(SyncState::Offline),
+                TransportError::Unauthorized => self.status.set_state(SyncState::NeedsAuth),
+                _ => {}
+            }
+        }
+    }
+
     pub async fn sync_caseload(&self, assignee: &str) -> Result<CaseloadStats, SyncError> {
+        let out = self.sync_caseload_inner(assignee).await;
+        if let Err(e) = &out {
+            self.note_transport(e);
+        }
+        out
+    }
+
+    async fn sync_caseload_inner(&self, assignee: &str) -> Result<CaseloadStats, SyncError> {
         let mut stats = CaseloadStats::default();
         let mut cursor = None;
 
@@ -341,6 +378,14 @@ impl<T: Transport> SyncEngine<T> {
 
     /// Refreshes form definitions. Cheap and human-paced, so it polls wholesale.
     pub async fn sync_config(&self) -> Result<Option<ConfigRev>, SyncError> {
+        let out = self.sync_config_inner().await;
+        if let Err(e) = &out {
+            self.note_transport(e);
+        }
+        out
+    }
+
+    async fn sync_config_inner(&self) -> Result<Option<ConfigRev>, SyncError> {
         let since = self
             .store
             .sync_state("config_rev")?
