@@ -14,7 +14,7 @@ use gpui::{
     ParentElement as _, Render, ScrollHandle, SharedString, StatefulInteractiveElement as _,
     Styled as _, Subscription, Window, div, prelude::FluentBuilder as _, px,
 };
-use gpui_component::{h_flex, v_flex};
+use gpui_component::{ActiveTheme, h_flex, v_flex};
 use medatat_core::view::fuzzy_score;
 use medatat_core::{CaseId, FormInstance};
 use medatat_store::{CaseRow, Store};
@@ -143,6 +143,7 @@ impl WorklistView {
         label: &'static str,
         sort: Sort,
         width: gpui::Pixels,
+        right: bool,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         // `AnyElement`, not `impl IntoElement`: under Rust 2024 the opaque type would
@@ -152,7 +153,14 @@ impl WorklistView {
             .id(SharedString::from(label))
             .w(width)
             .cursor_pointer()
+            .whitespace_nowrap()
+            // Headers are chrome, not data: muted and small so the eye lands on the rows.
+            .text_sm()
+            .text_color(cx.theme().muted_foreground)
             .when(active, |d| d.font_weight(FontWeight::BOLD))
+            // Numeric columns are read by comparing digits down a column, which only works
+            // if they share a right edge.
+            .when(right, |d| d.text_right())
             .child(SharedString::from(if active {
                 format!("{label} ↓")
             } else {
@@ -259,9 +267,12 @@ impl Render for WorklistView {
         let open = self.on_open.clone();
         let selected = self.selected;
         // Headings first: each needs `&mut Context`, and the row iterator borrows `self`.
-        let h_mrn = self.heading("MRN", Sort::Mrn, px(140.), cx);
-        let h_updated = self.heading("Updated", Sort::Updated, px(150.), cx);
-        let h_filled = self.heading("Filled", Sort::Completion, px(90.), cx);
+        // 210px, not 140: an MRN is the row's identity and these run to 17 characters, so
+        // the narrower column wrapped *every single row* onto two lines — the worst-rendered
+        // thing on screen was the one people scan by.
+        let h_mrn = self.heading("MRN", Sort::Mrn, px(210.), false, cx);
+        let h_updated = self.heading("Updated", Sort::Updated, px(150.), true, cx);
+        let h_filled = self.heading("Filled", Sort::Completion, px(90.), true, cx);
         let empty_message = if self.all.is_empty() {
             "No cases assigned."
         } else {
@@ -285,16 +296,43 @@ impl Render for WorklistView {
                     .gap_2()
                     .rounded_sm()
                     .cursor_pointer()
-                    .when(pos == selected, |d| d.font_weight(FontWeight::BOLD))
-                    .child(div().w(px(140.)).child(r.mrn.clone()))
-                    .child(div().flex_1().child(r.form.clone()))
-                    .child(div().w(px(150.)).child(r.updated.clone()))
-                    .child(div().w(px(90.)).child(SharedString::from(format!(
-                        "{} / {}{}",
-                        r.filled,
-                        r.total,
-                        if r.unsynced { " ·" } else { "" }
-                    ))))
+                    // Selection is a background band, not bold. Bold changes glyph widths,
+                    // so moving the cursor down the list reflowed every column it touched.
+                    .when(pos == selected, |d| {
+                        d.bg(cx.theme().accent).text_color(cx.theme().accent_foreground)
+                    })
+                    .when(pos != selected, |d| d.hover(|h| h.bg(cx.theme().muted)))
+                    .child(
+                        div()
+                            .w(px(210.))
+                            .whitespace_nowrap()
+                            .child(r.mrn.clone()),
+                    )
+                    .child(div().flex_1().whitespace_nowrap().child(r.form.clone()))
+                    .child(
+                        div()
+                            .w(px(150.))
+                            .text_right()
+                            .whitespace_nowrap()
+                            // Secondary: present for when it is wanted, quiet the rest of
+                            // the time.
+                            .when(pos != selected, |d| {
+                                d.text_color(cx.theme().muted_foreground)
+                            })
+                            .child(r.updated.clone()),
+                    )
+                    .child(
+                        div()
+                            .w(px(90.))
+                            .text_right()
+                            .whitespace_nowrap()
+                            .child(SharedString::from(format!(
+                                "{} / {}{}",
+                                r.filled,
+                                r.total,
+                                if r.unsynced { " ·" } else { "" }
+                            ))),
+                    )
                     .on_click(cx.listener(move |this, _, window, cx| {
                         this.selected = pos;
                         cx.notify();
@@ -321,9 +359,20 @@ impl Render for WorklistView {
                 h_flex()
                     .w_full()
                     .px_2()
+                    .pb_1()
                     .gap_2()
+                    // A rule under the headers: without it the header row reads as just
+                    // another case, and the first real row looks like a heading.
+                    .border_b_1()
+                    .border_color(cx.theme().border)
                     .child(h_mrn)
-                    .child(div().flex_1().child(SharedString::from("Form")))
+                    .child(
+                        div()
+                            .flex_1()
+                            .text_sm()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(SharedString::from("Form")),
+                    )
                     .child(h_updated)
                     .child(h_filled),
             )
