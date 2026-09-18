@@ -163,19 +163,29 @@ or Linux could plausibly produce a different set of passes, and neither has been
 **Do not read green here as green everywhere.** The suite costs ~1.1 s, so running it on the
 other two platforms is cheap the moment they build at all.
 
-### 11. The 100k-case corpus cannot be built through the write path
+### 11. A 100k-case corpus cannot be *seeded through the Worker* in reasonable time
 
-Measured in production: 0.12 cases/s serial, and **concurrency plateaus at 1.75× — tripling
-it from 8 to 24 bought 6%.** The ceiling is server-side. 100,000 cases is 131 hours at best.
+This entry used to say the corpus could not be built at all, and that was wrong. It confused
+a **server seeding** limit with a **client storage** limit. Only the first is real.
+
+**The storage question is settled.** Bench 5 built the full corpus locally on 2026-09-17 —
+100,000 cases x 1,000 fields = **100,000,000 values, seeded in 407 seconds** (~246,000
+rows/s) through `Store::apply_server_values`. Measured against a one-case control interleaved
+in the same process: **0.97× per load, 1.07× per save.** See
+[00-REQUIREMENTS §Verification status](00-REQUIREMENTS.md#verification-status--2026-09-17).
+
+**The seeding question stands.** Measured in production: 0.12 cases/s serial, and
+**concurrency plateaus at 1.75× — tripling it from 8 to 24 bought 6%.** The ceiling is
+server-side. 100,000 cases is 131 hours at best.
 
 The likely constraint is the single D1 `case_index`, which every write updates and which
 serialises writes, while the cases themselves are independent Durable Objects. That is a
 hypothesis the measurement points at, not a confirmed cause.
 
-So **R16 is verified by per-case measurement and extrapolation, not by a built corpus** —
-130 KB per case against a 10 GB per-object budget, which is the same shape of argument
-`docs/02-DATA-MODEL.md` already makes. Anyone who needs the real corpus should first
-establish whether `case_index` is the bottleneck and whether its update can be debounced.
+So the accepted limitation is narrower than it was: **you cannot stand up a realistic
+production corpus quickly**, which matters for load-testing the server and not at all for
+R13, R14, or R16. Anyone who needs that corpus should first establish whether `case_index`
+is the bottleneck and whether its update can be debounced.
 
 ## Risks
 
@@ -189,7 +199,7 @@ Ordered by expected cost × probability.
 | 4 | **`gpui-component` bus factor** — one company's library, the only thing making forms viable | Form layer orphaned | Apache-2.0; vendoring a fork is the contingency |
 | 5 | **`workers-rs` bus factor** — one maintainer, 184 open issues, `send_email` undocumented | Worker blocked | M1 proves the three unknowns first; escape hatch is TS/Hono + `medatat-core` via `wasm-bindgen` |
 | 6 | **Form builder is the largest UI**, and gpui-component has no drag-and-drop primitive | M5 overruns | Keyboard and button reorder ships first; drag is explicitly not a gate |
-| 7 | **Seeding 100M values is slow or costly** | Bench 4 never runs, R16 unverified | M1 measures 1,000 cases and extrapolates before M7 commits |
+| 7 | **Seeding 100M values is slow or costly** *(server only; retired for the client)* | Bench 4 never runs against a production corpus | **Client side closed:** 100M values seeded locally in 407 s and measured. Server side still 0.12 cases/s |
 | 8 | **Accidental `cx.notify()` per keystroke** makes 300 fields quadratic | "The app feels sluggish" six months on | `subscriptions_fire_once_per_edit` must fail CI |
 | 9 | **Swap pages plaintext to disk** despite SQLCipher (only relevant once `phi` is on) | PHI at rest unencrypted | Full-disk encryption as a deployment requirement; core dumps disabled; zeroize on drop |
 | 10 | **Email Sending is Beta**, on the login critical path | Nobody can log in | `trait Mailer` seam for Postmark/SES |

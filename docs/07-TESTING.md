@@ -131,7 +131,7 @@ separate:
 | Question | Needs |
 |---|---|
 | Does a hibernated DO read back quickly? (Bench 4) | 20–50 cold cases. Minutes |
-| Does the topology hold at 100k cases? (R16, M7) | Mostly answerable by measuring per-case storage on a small corpus and multiplying — the DO sizing in [02-DATA-MODEL.md](02-DATA-MODEL.md) already is that extrapolation |
+| Does the topology hold at 100k cases? (R16, M7) | **Answered by measurement, not extrapolation:** Bench 5 built the full 100M-value corpus on 2026-09-17 — 0.97x read, 1.07x write against a one-case control |
 | How does D1 `case_index` behave at 100k rows? | Genuinely needs the rows — but only **index** rows, which carry no values. `POST /bulk/cases` creates exactly those, cheaply. This is the one job that endpoint is well shaped for |
 
 ### Throughput is not credibly measurable on the local emulator
@@ -255,13 +255,17 @@ is an independent Durable Object, but each write also updates that case's row in
 That is worth confirming before anyone optimises it — the number above says *where* to look,
 not *what* to change.
 
-**Consequence for R16 and M7:** the 100,000-case corpus **cannot be built through the normal
-write path** at any client concurrency — 131 hours at best. That is not a reason to weaken
-the corpus; it is a finding about the write path. The options are to debounce the
-`case_index` update (a Worker change, and the one the measurement points at), or to accept
-that R16 is verified by per-case measurement and extrapolation rather than by building the
-corpus. `docs/02-DATA-MODEL.md`'s per-case sizing is already that shape of argument, and
-`POST /bulk/cases` exists precisely to create index rows cheaply without values.
+**Consequence for M7:** the 100,000-case corpus **cannot be built through the normal write
+path** at any client concurrency — 131 hours at best. That is not a reason to weaken the
+corpus; it is a finding about the write path, and the fix it points at is debouncing the
+`case_index` update (a Worker change). `POST /bulk/cases` exists precisely to create index
+rows cheaply without values.
+
+**This no longer blocks R16.** The requirement asks whether the *storage layer* holds at
+100M values, and that was answered on 2026-09-17 by building the corpus locally through
+`Store::apply_server_values` — 100,000 x 1,000 = 100,000,000 values in 407 s, measured at
+0.97x per load and 1.07x per save against a one-case control in the same process. Server
+seeding throughput and client storage scale are different questions; only the second is R16.
 
 ### Bench 4, measured locally — and what it does not say
 

@@ -35,7 +35,7 @@ these IDs.
 | R13 | Form load < 200ms with hundreds of fields | Bench 1, gated at 5 ms. **Measured 195 µs** |
 | R14 | Form save < 200ms with hundreds of fields | Bench 2, gated at 10 ms. **Measured 5.2 ms** for 300 fields, 86 µs for one |
 | R15 | No loading spinners. Ever. | A lint asserting no spinner/progress/skeleton exists in the UI crate. Bench 3 measures open-to-paint but **asserts nothing** — two of its four spans live in `medatat-ui` |
-| R16 | ~100M field values across ~100k patient cases | **Not yet verified.** Per-case sizing (~100 KB of a 10 GB DO budget) is an extrapolation; the 100k corpus has never been built. See [10-LIMITATIONS](10-LIMITATIONS.md) |
+| R16 | ~100M field values across ~100k patient cases | **Measured 2026-09-17.** Bench 5 at 100,000 cases x 1,000 fields = 100,000,000 values. Against a one-case control interleaved in the same process: **0.97x per load, 1.07x per save** (tolerance 1.5x) |
 
 ## Compliance matrix
 
@@ -51,14 +51,15 @@ these IDs.
 | R13 | Local encrypted SQLite is the UI's read path | [01](01-ARCHITECTURE.md) | Bench 1 ✅ 195 µs |
 | R14 | Local synchronous write + background outbox drain | [04](04-SYNC.md) | Bench 2 ✅ 5.2 ms |
 | R15 | Whole assigned caseload pre-synced before the user opens anything | [04 §Caseload pre-sync](04-SYNC.md#caseload-pre-sync) | spinner lint ✅; caseload pre-sync itself **not yet wired to the UI** |
-| R16 | One Durable Object per case, ~100 KB of a 10 GB budget each | [01](01-ARCHITECTURE.md), [02](02-DATA-MODEL.md) | **unverified at scale** |
+| R16 | `WITHOUT ROWID` on `(case_id, field_id)`; one Durable Object per case, ~128 KB of a 10 GB budget each | [01](01-ARCHITECTURE.md), [02](02-DATA-MODEL.md) | Bench 5 at 100M values ✅ 0.97x read, 1.07x write |
 
-## Verification status — 2026-08-18
+## Verification status — 2026-09-17
 
 Read this before trusting a tick anywhere else.
 
 **Verified by measurement:** R13 (195 µs against a 200 ms requirement), R14 (5.2 ms for 300
-fields; 86 µs for the single-field case that actually happens while typing).
+fields; 86 µs for the single-field case that actually happens while typing), and **R16**, at
+the full 100,000,000 values.
 
 **Verified by execution:** R5–R12 through widget-spec snapshots and 14 headless
 `#[gpui::test]` cases that dispatch real keystrokes; R2/R3 through runtime round-trips;
@@ -67,23 +68,38 @@ form-builder acceptance item 9 through a real SQLite store.
 **Verified structurally:** R15 — a lint asserts no spinner exists, and the design makes one
 unnecessary rather than merely discouraged.
 
-**Not verified: R16, and it is now clear why.** Per-case sizing is an extrapolation; the
-100k-case corpus has never been built. The two numbers that would settle it have since been
-measured against the deployed Worker rather than the emulator, and they are what makes the
-corpus infeasible rather than merely unbuilt:
+**R16 is verified, and the corpus was built after all.** Bench 5 seeded
+**100,000 cases x 1,000 fields = 100,000,000 values** in 407 seconds, then measured a
+one-case store and the full corpus *alternately in the same process*, so host load falls on
+both equally rather than being compared across runs:
 
-- **Seeding throughput: 0.12 cases/s in production.** The local figure was 1.90 — 16×
-  optimistic, an emulator artifact, and retracted. At the real rate a 100k corpus takes
-  roughly 131 hours, and adding concurrency does not fix it: throughput plateaus at 1.75×
-  and is server-bound, most likely on `case_index` contention in D1.
-- **Durable Object cold wake: 0.4–1.0 s**, against 0.16 s warm. That is three to six times
-  the entire 200 ms budget of R13 — which is not a problem but a vindication: it is exactly
-  the reason [ADR-0002](adr/0002-encrypted-local-sqlite.md) keeps the network off the critical path.
-  A design that awaited the network could not meet R13 on a cold DO, ever.
+| measurement | 1 case | 100,000 cases | ratio |
+|---|---|---|---|
+| load 1000 values p50 | 260 µs | 253 µs | **0.97x** |
+| load p99 | 2.148 ms | 2.124 ms | 0.99x |
+| save 300 fields p50 | 2.685 ms | 2.757 ms | 1.03x |
+| save mean | 2.807 ms | 3.004 ms | **1.07x** |
 
-So R16 rests on per-case extrapolation from a 500k-row local corpus (Bench 5, where the R13
-margin is flat) plus the production per-case cost. That is honest evidence for the shape of
-the curve and no evidence at all for the endpoint.
+A hundred thousand times the data costs nothing measurable. Absolute figures on that host,
+under a load average of 15: **917 µs to open a case, 2.87 ms to save 300 fields**, against a
+200 ms requirement — and `0/200` saves exceeded the 10 ms gate, with the WAL flat across the
+slowest five, so the tail is not checkpoint stalling.
+
+**What this does not settle.** The earlier claim that the corpus was *infeasible* confused
+two different limits, and only one of them was ever real:
+
+- **Server seeding throughput is still 0.12 cases/s in production**, still plateauing at
+  1.75x under concurrency, still most likely bound on `case_index` contention in D1. A 100k
+  corpus through the Worker write path is still ~131 hours. That is a **seeding** limit, not
+  a storage one, and R16 does not ask about it.
+- **Durable Object cold wake: 0.4–1.0 s**, against 0.16 s warm. Three to six times the whole
+  200 ms budget of R13 — not a problem but a vindication, and exactly why
+  [ADR-0002](adr/0002-encrypted-local-sqlite.md) keeps the network off the critical path. A
+  design that awaited the network could not meet R13 on a cold DO, ever.
+
+So: the **client storage layer** is verified at 100M values by direct measurement. Seeding a
+production corpus at that size through the Worker remains slow and unattempted. Anyone who
+needs the latter should first establish whether the `case_index` update can be debounced.
 
 **Platform coverage.** All three platforms now build and pass the full test suite in CI,
 including the headless GPUI suite. That is narrower than it sounds: CI never opens a window,

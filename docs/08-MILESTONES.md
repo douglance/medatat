@@ -8,7 +8,7 @@ tri-platform viability and the latency claim — are settled in the first two we
 
 ---
 
-## Status at a glance — 2026-08-18
+## Status at a glance — 2026-09-17
 
 | | | |
 |---|---|---|
@@ -19,7 +19,7 @@ tri-platform viability and the latency claim — are settled in the first two we
 | **M4** Runtime renderer | ✅ | All seven field kinds, 1–3 columns |
 | **M5** Form builder | 🟡 | Items 1–6, 8, 9 done. Item 7 needs two machines and live sync |
 | **M6** Worklist + keyboard | 🟡 | Built and unit-tested; the GUI suite now **runs green on all three platforms** — the keyboard tests were themselves macOS-shaped until 2026-08-18 and could only ever have passed there. Still **never driven by a human on Windows or Linux**, which is what the amber is for |
-| **M7** Scale run | 🟡 | Client side done (Bench 5, 500k rows). Server side measured; **concurrency shipped and measured not to help — 1.75× ceiling, server-bound.** R16 rests on per-case extrapolation, not a built corpus |
+| **M7** Scale run | 🟡 | **R16 closed on the client: the full 100M-value corpus was built and measured (2026-09-17) — 100k cases x 1k fields, 0.97x read / 1.07x write against a one-case control.** Server side still 0.12 cases/s with a 1.75x concurrency ceiling, so `reindex` and the Cloudflare-cost items remain |
 | **M8** Packaging | 🟡 | **All three artifacts now build on their own platforms in CI** and upload: macOS `.app`, Windows NSIS installer + portable zip, Linux `.deb` (lintian-clean) + AppImage. `cargo audit` is clean and gated. Unsigned on macOS and Windows — needs an Apple identity and an Authenticode certificate. Auto-update deliberately not built until signing exists. **Nobody has installed any of them** |
 
 **Two of the three original blockers are gone.** The Cloudflare deployment is live, and CI
@@ -32,9 +32,9 @@ its tests headlessly; it does not open a window, and no one has typed into this 
 on anything but macOS.
 
 **What is verified how** is set out in
-[00-REQUIREMENTS §Verification status](00-REQUIREMENTS.md#verification-status--2026-08-18).
-The short version: R13 and R14 are measured, R5–R12 are executed, R15 is structural, and
-**R16 is not verified**.
+[00-REQUIREMENTS §Verification status](00-REQUIREMENTS.md#verification-status--2026-09-17).
+The short version: R13, R14 and **R16** are measured, R5–R12 are executed, and R15 is
+structural.
 
 ## M0 — Platform bring-up
 
@@ -268,9 +268,16 @@ would close the gap, and it needs a human at an unlocked screen.
 ## M7 — Scale run
 
 ### Exit criteria
-- [ ] 100,000 synthetic cases / ~100M values seeded (R16).
-- [ ] Bench 4 run against the full corpus; results recorded.
-- [ ] Actual seeding time and Cloudflare cost recorded against the M1 extrapolation.
+- [x] 100,000 synthetic cases / ~100M values seeded (R16). **Done 2026-09-17, locally through
+      `Store::apply_server_values`: 100,000 x 1,000 = 100,000,000 values in 407 s (~246k
+      rows/s), 12.8 GB on disk at ~128 KB per case.**
+- [x] Bench 5 run against the full corpus; results recorded. **Paired control, same process:
+      0.97x per load and 1.07x per save at 100,000x the data (tolerance 1.5x). Absolute, under
+      a load average of 15: open 917 µs, save 300 fields 2.87 ms, against a 200 ms
+      requirement. 0/200 saves exceeded the 10 ms gate.**
+- [ ] Bench 4 (cold-DO full-case sync) run against the full corpus; results recorded.
+- [ ] Actual **server** seeding time and Cloudflare cost recorded against the M1
+      extrapolation. Still 0.12 cases/s, so a production corpus is ~131 h and unattempted.
 - [x] Benches 1 and 2 re-run against a client holding a realistic caseload; still inside
       targets. **500 cases × 1,000 fields = 500k rows: open-a-case mean 590 µs (gate 5 ms),
       `apply_local` 300 fields 8.76 ms (gate 10 ms), plan still a PK range scan, 130 KB per

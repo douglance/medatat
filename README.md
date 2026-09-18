@@ -20,16 +20,28 @@ backend, built for arbitrary runtime-defined forms at ~100M field values.
 | **R13** form load, 500 fields | 200 ms | 5 ms | **195 µs** |
 | **R14** form save, 300 fields | 200 ms | 10 ms | **5.2 ms** |
 | R14 single field (the steady state) | — | — | **86 µs** |
+| **R16** 100M values, 100k cases | works at scale | 1.5× | **0.97× read, 1.07× write** |
 | Worker bundle | 10 MB | — | **391 KB** gzipped |
 
 R13 has roughly a thousandfold margin over the requirement. That is the whole payoff of
 making local encrypted SQLite the UI's system of record rather than putting the network on
 the critical path — see [ADR-0002](docs/adr/0002-encrypted-local-sqlite.md).
 
-Two numbers are deliberately **absent** rather than estimated: seeding throughput and the
-Durable Object cold-wake time. Both were measured locally, both turned out to be artifacts
-of the emulator, and both are recorded as unmeasured until there is a real deployment. See
-[07-TESTING.md](docs/07-TESTING.md).
+R16 is the one that took longest to settle, and it is measured the only way worth believing:
+a corpus of **100,000,000 field values across 100,000 cases**, with a one-case control
+interleaved in the same process so host load falls on both equally. A hundred thousand times
+the data costs 0.97× per load and 1.07× per save — no measurable penalty at all. That is the
+`WITHOUT ROWID` layout keyed on `(case_id, field_id)` doing what
+[ADR-0002](docs/adr/0002-encrypted-local-sqlite.md) said it would: opening a case touches the
+same handful of pages whether the store holds one case or a hundred thousand.
+
+Two numbers were once deliberately **absent** rather than estimated — seeding throughput and
+the Durable Object cold-wake time — because the local figures turned out to be emulator
+artifacts. Both have since been measured against the real deployment: **0.12 cases/s** server
+seeding, and **0.4–1.0 s** cold-DO wake against 0.16 s warm. Neither touches R13: the cold
+wake is three to six times the entire 200 ms budget, which is precisely why the network is
+not on the critical path. Server seeding throughput and client storage scale are different
+questions, and only the second is what R16 asks. See [07-TESTING.md](docs/07-TESTING.md).
 
 ## What it does
 
